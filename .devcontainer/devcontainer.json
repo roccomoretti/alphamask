@@ -9,7 +9,6 @@
 		"dockerfile": "../Dockerfile"
 	},
 	"features": {
-		"ghcr.io/devcontainers/features/common-utils:2": {},
 		"ghcr.io/devcontainers-contrib/features/zsh-plugins:0": {},
 		"ghcr.io/stuartleeks/dev-container-features/shell-history:0": {}
 	},
@@ -21,9 +20,7 @@
 	"vscode": {
 		"extensions": [
 			"ms-toolsai.jupyter",
-			"ms-python.python",
-			"ms-python.black-formatter",
-			"ArianJamasb.protein-viewer"
+			"ms-python.python"
 		]
 	}
 }
