@@ -1,4 +1,4 @@
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Callable, Any
 from .types import MaskingStrategy, ExperimentConfig, ExperimentPaths
 from .experiment import MaskingExperiment
 from .logging import setup_logger
@@ -25,8 +25,30 @@ def run_masking_experiment(
     run_control: bool = True,
     run_only_control: bool = False,
     unified_memory: bool = False,
-) -> Tuple[Optional[str], Optional[str]]:
-    """Convenience function to run masking experiments."""
+    callback_fn: Optional[Callable[[Any, Optional[str]], None]] = None,
+) -> Tuple[Optional[str], Optional[Any]]:
+    """
+    Convenience function to run masking experiments.
+    
+    Args:
+        sequence: Input protein sequence
+        jobname_prefix: Prefix for job names
+        parent_path: Path to save results
+        masking_strategy: Strategy for masking
+        positions_str: Comma-separated positions to mask
+        num_recycles: Number of recycles
+        num_seeds: Number of seeds
+        msa_method: Method for MSA generation
+        custom_a3m_path: Path to custom MSA file
+        mutations: Comma-separated mutations
+        run_control: Whether to run control
+        run_only_control: Whether to only run control
+        unified_memory: Whether to use unified memory
+        callback_fn: Optional callback function for visualization/analysis
+        
+    Returns:
+        Tuple[Optional[str], Optional[Any]]: Tuple of (jobname, pipeline instance)
+    """
     # Import here to avoid circular imports
     from alphamask.core.pipeline import DefaultPipeline, MaskingPipeline, MutateAndMaskingPipeline
 
@@ -56,7 +78,17 @@ def run_masking_experiment(
         run_control=run_control,
         run_only_control=run_only_control,
         unified_memory=unified_memory,
+        callback_fn=callback_fn,
     )
 
     experiment = MaskingExperiment(config)
-    return experiment.run()
+    jobname, pipeline = experiment.run()
+    
+    # Call callback if provided and pipeline exists
+    if callback_fn is not None and pipeline is not None:
+        mutation_str = None
+        if config.mutations:
+            mutation_str = config.mutations[0]
+        callback_fn(pipeline, mutation_str)
+    
+    return jobname, pipeline

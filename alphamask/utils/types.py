@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Callable, Any
 
 
 class MaskingStrategy(Enum):
@@ -25,13 +25,17 @@ class ExperimentConfig:
     run_control: bool = True
     run_only_control: bool = False
     unified_memory: bool = False
+    callback_fn: Optional[Callable[[Any, Optional[str]], None]] = None
 
 
 @dataclass
 class ExperimentPaths:
     vanilla_jobname: Optional[str] = None
     vanilla_path: Optional[str] = None
+    vanilla_pipeline: Optional[Any] = None
     mask_mutate_jobname: Optional[str] = None
     mask_mutate_path: Optional[str] = None
+    mask_mutate_pipeline: Optional[Any] = None
     mask_jobname: Optional[str] = None
     mask_path: Optional[str] = None
+    mask_pipeline: Optional[Any] = None

@@ -26,6 +26,19 @@ class DefaultPipeline:
         self.params = params or {}
         self._setup_parameter_definitions()
         self._validate_parameters()
+        
+        # Add storage for MSAs in base class
+        self.stored_msas = {
+            'original': None,
+            'mutated': None,
+            'masked': None,
+            'deletion_matrix': None,
+            'masked_deletion_matrix': None
+        }
+
+    def get_stored_msas(self) -> Dict:
+        """Return stored MSAs for inspection"""
+        return self.stored_msas
 
     def _setup_parameter_definitions(self) -> None:
         """Set up parameter definitions and constraints."""
@@ -176,7 +189,11 @@ class DefaultPipeline:
         prep_inputs.get_msa()
         prep_inputs.use_templates()
 
-        # Prepare model
+        # Store original MSA
+        self.stored_msas['original'] = prep_inputs.msa.copy()
+        self.stored_msas['deletion_matrix'] = prep_inputs.deletion_matrix.copy()
+
+        # Prepare model with original MSA
         prep_model = PrepModel(
             model_type=self.model_type,
             rank_by=self.rank_by,
@@ -316,6 +333,10 @@ class MaskingPipeline(DefaultPipeline):
         prep_inputs.get_msa()
         prep_inputs.use_templates()
 
+        # Store original MSA
+        self.stored_msas['original'] = prep_inputs.msa.copy()
+        self.stored_msas['deletion_matrix'] = prep_inputs.deletion_matrix.copy()
+
         # Apply masking
         if self.masking_mode == "list":
             if self.mask_msa:
@@ -326,12 +347,15 @@ class MaskingPipeline(DefaultPipeline):
                     cols=self.cols,
                     mask_identity=self.mask_identity,
                 )
+                self.stored_msas['masked'] = msa_masked.copy()
+                
             if self.mask_deletion_matrix:
                 print(f"The following columns will be masked in the deletion matrix: {self.cols}")
                 deletion_matrix_masked = msa_utils.mask_columns_list_deletion_matrix(
                     arr=prep_inputs.deletion_matrix,
                     cols=self.cols
                 )
+                self.stored_msas['masked_deletion_matrix'] = deletion_matrix_masked.copy()
         elif self.masking_mode == "ranges":
             raise NotImplementedError("The masking_mode 'range' is not fully implemented yet.")
         elif self.masking_mode == "random":
@@ -463,10 +487,15 @@ class MutatePipeline(MaskingPipeline):
         prep_inputs.get_msa()
         prep_inputs.use_templates()
 
+        # Store original MSA
+        self.stored_msas['original'] = prep_inputs.msa.copy()
+        self.stored_msas['deletion_matrix'] = prep_inputs.deletion_matrix.copy()
+
         # Apply mutations
         print(f"The following mutations will be performed: {self.mutations}")
         mutated_msa = msa_utils.mutate_first_sequence(prep_inputs.msa, self.mutations)
-
+        self.stored_msas['mutated'] = mutated_msa.copy()
+        
         # Prepare model with mutated MSA
         prep_model = PrepModel(
             model_type=self.model_type,
@@ -544,6 +573,18 @@ class MutateAndMaskingPipeline(MaskingPipeline):
         self.required_parameters.extend(["mutations"])
         self.param_types["mutations"] = list
         self._validate_parameters()
+        # Add storage for MSAs
+        self.stored_msas = {
+            'original': None,
+            'mutated': None,
+            'masked': None,
+            'deletion_matrix': None,
+            'masked_deletion_matrix': None
+        }
+
+    def get_stored_msas(self) -> Dict:
+        """Return stored MSAs for inspection"""
+        return self.stored_msas
 
     def _save_config(self, jobname: str, parentPath: str, mutations: List[str]) -> None:
         """Save mutation and masking pipeline configuration."""
@@ -595,19 +636,26 @@ class MutateAndMaskingPipeline(MaskingPipeline):
         prep_inputs.get_msa()
         prep_inputs.use_templates()
 
+        # Store original MSA
+        self.stored_msas['original'] = prep_inputs.msa.copy()
+        self.stored_msas['deletion_matrix'] = prep_inputs.deletion_matrix.copy()
+
         # Apply mutations and masking
         print(f"The following mutations will be performed: {self.mutations}")
         mutated_msa = msa_utils.mutate_first_sequence(prep_inputs.msa, self.mutations)
+        self.stored_msas['mutated'] = mutated_msa.copy()
         
         print("The MSA will be masked in the mutated positions")
         masked_msa = msa_utils.mask_mutated_positions(
             mutated_msa, self.mutations, self.mask_identity
         )
+        self.stored_msas['masked'] = masked_msa.copy()
         
         print("The deletion matrix will be masked in the mutated positions")
         masked_deletion_matrix = msa_utils.mask_mutated_positions_deletion_matrix(
             prep_inputs.deletion_matrix, self.mutations
         )
+        self.stored_msas['masked_deletion_matrix'] = masked_deletion_matrix.copy()
 
         # Prepare model with mutated and masked MSA
         prep_model = PrepModel(

@@ -11,6 +11,8 @@ import subprocess
 import tempfile
 import gc
 from google.colab import files
+import jax
+import jax.numpy as jnp
 
 from colabdesign.af.contrib import predict
 
@@ -655,11 +657,13 @@ class MSAUtils:
             if not re.match(r"^[A-Z]\d+[A-Z]$", mutation):
                 raise ValueError(f"Invalid mutation format: {mutation}. Expected format: S146D")
                 
+            # Convert to zero-based indexing
             position = int(mutation[1:-1]) - self.offset_zero_indexing
             mutated_positions.append(position)
             
         arr[1:, mutated_positions] = 0
-        print(f"Masked positions (deletion matrix): {', '.join(map(str, mutated_positions))}")
+        # Print positions in 1-based indexing for consistency with user input
+        print(f"Masked positions (deletion matrix): {', '.join(map(lambda x: str(x + 1), mutated_positions))}")
         return arr
 
     def convert_to_letters(self, arr: np.ndarray) -> np.ndarray:
@@ -685,29 +689,30 @@ class MSAUtils:
         yaxis_title: str,
         save_to_pdf: Optional[str] = None,
     ) -> None:
-        """
-        Plot 2D array visualization.
-        
-        Args:
-            array: 2D array to plot
-            title: Plot title
-            xaxis_title: X-axis label
-            yaxis_title: Y-axis label
-            save_to_pdf: Path to save PDF output
-        """
+        """Plot 2D array visualization."""
+        # Define custom colorscale
         colors = [
-            "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-            "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-            "#1a55FF", "#55a2FF", "#55FFB1", "#a2FF55", "#FFEA1a",
-            "#FF551a", "#FF1a55", "#FF1aa3", "#B51aFF", "#1a8CFF",
-            "#1aFF55", "#7F1aFF"
-        ] * 3  # Repeat colors for more positions
+            '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+            '#1a55FF', '#55a2FF', '#55FFB1', '#a2FF55', '#FFEA1a',
+            '#FF551a', '#FF1a55', '#FF1aa3', '#B51aFF', '#1a8CFF',
+            '#1aFF55', '#7F1aFF'
+        ]
         
-        colorscale = [[i/49, color] for i, color in enumerate(colors)]
+        # Create proper colorscale format
+        n_colors = len(colors)
+        colorscale = [
+            [i/(n_colors-1), color] for i, color in enumerate(colors)
+        ]
         
         import plotly.graph_objects as go
         
-        fig = go.Figure(data=go.Heatmap(z=array, colorscale=colorscale))
+        fig = go.Figure(data=go.Heatmap(
+            z=array,
+            colorscale=colorscale,
+            showscale=True
+        ))
+        
         fig.update_layout(
             title=title,
             xaxis_title=xaxis_title,
@@ -719,6 +724,91 @@ class MSAUtils:
         )
 
         if save_to_pdf:
-            fig.write_image(save_to_pdf)
+            # Create directory if it doesn't exist
+            save_path = Path(save_to_pdf)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.write_image(str(save_path))
 
-        fig.show() 
+        fig.show()
+
+    def get_coevolution(self, msa_array: np.ndarray) -> np.ndarray:
+        """
+        Calculate coevolution matrix from Multiple Sequence Alignment (MSA).
+        
+        This method implements Direct Coupling Analysis (DCA) to identify 
+        coevolving residue pairs in protein sequences. The steps are:
+        1. Convert MSA to one-hot encoding
+        2. Calculate covariance matrix
+        3. Calculate inverse covariance (precision matrix)
+        4. Convert to partial correlation coefficients
+        5. Apply Average Product Correction (APC) to reduce bias
+        
+        This was rewritten based on Sergey's implementation in ColabDesign.
+        
+        Args:
+            msa_array: MSA array of shape (num_sequences, sequence_length)
+                where each element is an integer representing an amino acid
+            
+        Returns:
+            contact_scores: Matrix of shape (sequence_length, sequence_length)
+                containing coevolution scores between residue pairs
+        """
+        @jax.jit
+        def _calculate_coevolution(msa_array):
+            # Convert MSA to one-hot encoding
+            # 22 represents 20 amino acids + gap + unknown
+            one_hot_msa = jax.nn.one_hot(msa_array, num_classes=22)
+            num_sequences, sequence_length, num_amino_acids = one_hot_msa.shape
+            
+            # Reshape to 2D matrix for covariance calculation
+            # Each row represents a sequence, each column a position-amino_acid pair
+            flattened_msa = one_hot_msa.reshape(num_sequences, -1)
+            
+            # Calculate covariance matrix
+            covariance_matrix = jnp.cov(flattened_msa.T)
+            
+            # Add shrinkage to ensure matrix is invertible
+            # Shrinkage parameter scales with 1/sqrt(N) where N is number of sequences
+            shrinkage_factor = 4.5 / jnp.sqrt(num_sequences)
+            shrinkage_matrix = shrinkage_factor * jnp.eye(covariance_matrix.shape[0])
+            regularized_covariance = covariance_matrix + shrinkage_matrix
+            
+            # Calculate inverse covariance (precision matrix)
+            precision_matrix = jnp.linalg.inv(regularized_covariance)
+            
+            # Convert to partial correlation coefficients
+            # This normalizes the precision matrix by its diagonal elements
+            precision_diag = jnp.diag(precision_matrix)
+            partial_correlations = precision_matrix / jnp.sqrt(
+                precision_diag[:, None] * precision_diag[None, :]
+            )
+            
+            # Reshape and compute coupling scores
+            # Only consider the first 20 amino acids (exclude gap and unknown)
+            reshaped_correlations = partial_correlations.reshape(
+                sequence_length, num_amino_acids,
+                sequence_length, num_amino_acids
+            )
+            coupling_scores = jnp.sqrt(
+                jnp.square(reshaped_correlations[:, :20, :, :20]).sum((1, 3))
+            )
+            
+            # Zero out diagonal (self-contacts)
+            positions = jnp.arange(sequence_length)
+            coupling_scores = coupling_scores.at[positions, positions].set(0)
+            
+            # Apply Average Product Correction (APC)
+            # This helps remove background noise and phylogenetic bias
+            row_means = coupling_scores.sum(0, keepdims=True)  # Mean per column
+            col_means = coupling_scores.sum(1, keepdims=True)  # Mean per row
+            matrix_mean = coupling_scores.sum()  # Overall mean
+            
+            # APC correction: subtract product of row/col means divided by matrix mean
+            apc_correction = (row_means * col_means) / matrix_mean
+            corrected_scores = coupling_scores - apc_correction
+            
+            # Zero out diagonal again after APC correction
+            return corrected_scores.at[positions, positions].set(0)
+        
+        # Convert JAX array to numpy array for compatibility
+        return np.array(_calculate_coevolution(msa_array)) 

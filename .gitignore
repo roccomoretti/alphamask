@@ -1,2 +1,4 @@
 alphamask.egg-info
 __pycache__/
+rmsd_analysis/*
+notebooks/out.png

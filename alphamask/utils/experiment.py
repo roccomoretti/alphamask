@@ -4,7 +4,7 @@ import jax
 import shutil
 from datetime import datetime
 from google.colab import files
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Callable, Any
 
 from .types import MaskingStrategy, ExperimentConfig, ExperimentPaths
 from .logging import setup_logger
@@ -76,17 +76,20 @@ class MaskingExperiment:
         vanilla_params = self.common_params.copy()
         vanilla_params["jobname"] = f"{self.config.jobname_prefix}_vanilla"
         vanilla_params["cols"] = []
-        vanilla_pipeline = self.DefaultPipeline(params=vanilla_params)
-        self.paths.vanilla_jobname = vanilla_pipeline.run()
+        self.paths.vanilla_pipeline = self.DefaultPipeline(params=vanilla_params)  # Store first
+        self.paths.vanilla_jobname = self.paths.vanilla_pipeline.run()
 
         # Store the control path
         self.paths.vanilla_path = os.path.join(
             self.config.parent_path, self.paths.vanilla_jobname, "out", "pdbs"
         )
 
+        # Call callback if provided
+        if self.config.callback_fn is not None:
+            self.config.callback_fn(self.paths.vanilla_pipeline, None)
+
         logger.info("Vanilla AlphaFold2 prediction completed")
         logger.info(f"Vanilla results stored in: {self.paths.vanilla_path}")
-        self._clear_memory()
         return self.paths.vanilla_jobname
 
     def _run_masked(self, masked_positions: List[int], jobname: str) -> str:
@@ -97,6 +100,12 @@ class MaskingExperiment:
         masked_params["cols"] = masked_positions
         masked_pipeline = self.MaskingPipeline(params=masked_params)
         self.paths.mask_jobname = masked_pipeline.run()
+        self.paths.mask_pipeline = masked_pipeline  # Store pipeline instance
+        
+        # Call callback if provided
+        if self.config.callback_fn is not None:
+            self.config.callback_fn(masked_pipeline, None)
+        
         self._clear_memory()
 
         # Store paths
@@ -128,6 +137,13 @@ class MaskingExperiment:
         masked_params["cols"] = masked_positions
         masked_pipeline = self.MutateAndMaskingPipeline(params=masked_params)
         self.paths.mask_mutate_jobname = masked_pipeline.run()
+        self.paths.mask_mutate_pipeline = masked_pipeline  # Store pipeline instance
+        
+        # Call callback if provided
+        if self.config.callback_fn is not None:
+            mutation_str = "_".join(self.config.mutations) if self.config.mutations else None
+            self.config.callback_fn(masked_pipeline, mutation_str)
+        
         self._clear_memory()
 
         # Store paths
@@ -197,24 +213,22 @@ class MaskingExperiment:
                 masked_positions, f"{self.config.jobname_prefix}_{strategy_name}"
             )
 
-    def _get_result_paths(self) -> Tuple[Optional[str], Optional[str]]:
-        """Return appropriate paths based on experiment type."""
+    def _get_result_paths(self) -> Tuple[Optional[str], Optional[Any]]:
+        """Return appropriate paths and pipeline instances based on experiment type."""
         if self.config.run_control and self.config.run_only_control:
-            return self.paths.vanilla_jobname, self.paths.vanilla_path
+            return self.paths.vanilla_jobname, self.paths.vanilla_pipeline
         elif self.config.run_control:
-            return self.paths.vanilla_jobname, None
+            return self.paths.vanilla_jobname, self.paths.vanilla_pipeline  # Return pipeline here too
         elif self.config.run_only_control:
-            return None, self.paths.vanilla_path
+            return None, self.paths.vanilla_pipeline
         elif self.config.masking_strategy == MaskingStrategy.ITERATIVE_SINGLE:
-            return self.paths.mask_jobname, self.paths.mask_path
-        elif (
-            self.config.masking_strategy == MaskingStrategy.ITERATIVE_SINGLE_MASK_MUTATE
-        ):
-            return self.paths.mask_mutate_jobname, self.paths.mask_mutate_path
+            return self.paths.mask_jobname, self.paths.mask_pipeline
+        elif self.config.masking_strategy == MaskingStrategy.ITERATIVE_SINGLE_MASK_MUTATE:
+            return self.paths.mask_mutate_jobname, self.paths.mask_mutate_pipeline
         else:
-            return self.paths.mask_jobname, self.paths.mask_path
+            return self.paths.mask_jobname, self.paths.mask_pipeline
 
-    def run(self) -> Tuple[Optional[str], Optional[str]]:
+    def run(self) -> Tuple[Optional[str], Optional[Any]]:
         """Run the masking experiment."""
         logger.info(
             f"Starting masking experiment with strategy: {self.config.masking_strategy.value}"
