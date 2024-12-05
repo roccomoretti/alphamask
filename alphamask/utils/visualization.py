@@ -1,10 +1,10 @@
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Union
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
 import pandas as pd
 from ..core.msa import MSAUtils
-
+import numpy as np
 class MSAVisualizer:
     """
     Visualizer for MSA and coevolution analysis.
@@ -57,7 +57,7 @@ class MSAVisualizer:
         jobname: str,
         parent_path: str
     ) -> None:
-        """Visualize MSA arrays."""
+        """Visualize MSA arrays using subplots."""
         print("\n📊 MSA Visualizations")
         print("-" * 50)
         
@@ -65,32 +65,78 @@ class MSAVisualizer:
         output_dir = Path(parent_path) / jobname
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Plot original MSA
-        self.msa_utils.plot_2d_array(
-            array=msas['original'],
-            title="Original MSA",
-            xaxis_title="Position",
-            yaxis_title="Sequence",
-            save_to_pdf=str(output_dir / "original_msa.pdf")
+        # Create subplots
+        fig = make_subplots(
+            rows=1, cols=3 if msas['masked'] is not None else 1,
+            subplot_titles=("Original MSA", "Mutated MSA", "Masked MSA")
+            if msas['masked'] is not None else ("Original MSA",)
+        )
+        
+        # Add original MSA
+        fig.add_trace(
+            go.Heatmap(
+                z=msas['original'],
+                colorscale=self._get_msa_colorscale(),
+                showscale=True,
+                name="Original"
+            ),
+            row=1, col=1
         )
         
         if msas['mutated'] is not None:
-            self.msa_utils.plot_2d_array(
-                array=msas['mutated'],
-                title="Mutated MSA",
-                xaxis_title="Position",
-                yaxis_title="Sequence",
-                save_to_pdf=str(output_dir / "mutated_msa.pdf")
+            fig.add_trace(
+                go.Heatmap(
+                    z=msas['mutated'],
+                    colorscale=self._get_msa_colorscale(),
+                    showscale=True,
+                    name="Mutated"
+                ),
+                row=1, col=2
             )
         
         if msas['masked'] is not None:
-            self.msa_utils.plot_2d_array(
-                array=msas['masked'],
-                title="Masked MSA",
-                xaxis_title="Position",
-                yaxis_title="Sequence",
-                save_to_pdf=str(output_dir / "masked_msa.pdf")
+            fig.add_trace(
+                go.Heatmap(
+                    z=msas['masked'],
+                    colorscale=self._get_msa_colorscale(),
+                    showscale=True,
+                    name="Masked"
+                ),
+                row=1, col=3
             )
+        
+        # Update layout
+        fig.update_layout(
+            title="Multiple Sequence Alignment Analysis",
+            height=500,
+            width=1500 if msas['masked'] is not None else 500,
+            showlegend=True
+        )
+        
+        # Update axes labels
+        for i in range(1, 4):
+            fig.update_xaxes(title_text="Position", row=1, col=i)
+            fig.update_yaxes(title_text="Sequence" if i == 1 else "", row=1, col=i)
+        
+        # Save and display
+        fig.write_html(str(output_dir / "msa_visualization.html"))
+        fig.write_image(str(output_dir / "msa_visualization.pdf"))
+        fig.show()
+
+    def _get_msa_colorscale(self) -> List[List[Union[float, str]]]:
+        """Get colorscale for MSA visualization."""
+        colors = [
+            '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+            '#1a55FF', '#55a2FF', '#55FFB1', '#a2FF55', '#FFEA1a',
+            '#FF551a', '#FF1a55', '#FF1aa3', '#B51aFF', '#1a8CFF',
+            '#1aFF55', '#7F1aFF'
+        ]
+        
+        n_colors = len(colors)
+        return [
+            [i/(n_colors-1), color] for i, color in enumerate(colors)
+        ]
 
     def _get_top_coevolving_pairs(
         self,

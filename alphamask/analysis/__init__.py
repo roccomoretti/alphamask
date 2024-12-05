@@ -5,7 +5,7 @@ This module provides functionality for analyzing protein structure predictions,
 including RMSD calculations, statistical analysis, and visualization.
 """
 
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any
 from pathlib import Path
 import logging
 from dataclasses import dataclass
