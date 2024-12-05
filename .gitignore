@@ -3,3 +3,9 @@ __pycache__/
 rmsd_analysis/*
 notebooks/out.png
 mask_72/*
+repo.md
+state1.pdb
+state2.pdb
+notebooks/rmsd_analysis/*
+notebooks/newplot.png
+

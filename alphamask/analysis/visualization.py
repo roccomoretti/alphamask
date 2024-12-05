@@ -87,6 +87,24 @@ class RMSDVisualizer:
                 
         df = pd.DataFrame(data)
         
+        # Find global max RMSD for consistent axes
+        max_rmsd = 0
+        if control_results:
+            max_rmsd = max(
+                max(r.rmsd_ref1 for r in control_results),
+                max(r.rmsd_ref2 for r in control_results if r.rmsd_ref2 is not None)
+            )
+        
+        for results in results_dict.values():
+            max_rmsd = max(
+                max_rmsd,
+                max(r.rmsd_ref1 for r in results),
+                max(r.rmsd_ref2 for r in results if r.rmsd_ref2 is not None)
+            )
+        
+        # Add some padding to max_rmsd
+        max_rmsd = max_rmsd * 1.1
+        
         # Create plot
         fig, axes = plt.subplots(1, 2 if 'RMSD_Ref2' in df.columns else 1,
                                 figsize=(self.config.plot_width, self.config.plot_height))
@@ -98,6 +116,7 @@ class RMSDVisualizer:
         axes[0].set_title('RMSD Distribution vs Reference 1')
         axes[0].set_ylabel('RMSD (Å)')
         axes[0].tick_params(axis='x', rotation=45)
+        axes[0].set_ylim(0, max_rmsd)
         
         # Plot Reference 2 if available
         if 'RMSD_Ref2' in df.columns:
@@ -105,6 +124,7 @@ class RMSDVisualizer:
             axes[1].set_title('RMSD Distribution vs Reference 2')
             axes[1].set_ylabel('RMSD (Å)')
             axes[1].tick_params(axis='x', rotation=45)
+            axes[1].set_ylim(0, max_rmsd)
             
         if title:
             fig.suptitle(title)
@@ -138,16 +158,17 @@ class RMSDVisualizer:
         if rmsd_ref2 is None:
             rmsd_ref2 = rmsd_ref1
             
+        # Get common range for all plots
+        max_rmsd = max(max(rmsd_ref1), max(rmsd_ref2))
+        
+        # Create figure with subplots
         fig = plt.figure(figsize=(self.config.plot_width, self.config.plot_height))
         gs = gridspec.GridSpec(2, 2, width_ratios=[5, 1], height_ratios=[1, 5],
-                             hspace=0.2, wspace=0.2)
-                             
+                              hspace=0.05, wspace=0.05)
+                              
         ax_main = plt.subplot(gs[1, 0])
         ax_histx = plt.subplot(gs[0, 0], sharex=ax_main)
         ax_histy = plt.subplot(gs[1, 1], sharey=ax_main)
-        
-        # Get common range
-        max_rmsd = max(max(rmsd_ref1), max(rmsd_ref2))
         
         # Create 2D histogram
         H, xedges, yedges = np.histogram2d(
@@ -163,17 +184,24 @@ class RMSDVisualizer:
                                norm=LogNorm(vmin=vmin, vmax=vmax),
                                cmap=self.cmap)
                                
+        # Add diagonal line
+        ax_main.plot([0, max_rmsd], [0, max_rmsd], 'k--', alpha=0.5, linewidth=1)
+        
         # Add colorbar
         cbar = fig.colorbar(im, ax=ax_histy)
         cbar.set_label('log(counts)', labelpad=10)
         
         # Create 1D histograms
         ax_histx.hist(rmsd_ref1, bins=80, range=(0, max_rmsd),
-                     density=True, alpha=1, color='black')
+                      density=True, alpha=1, color='black')
         ax_histy.hist(rmsd_ref2, bins=80, range=(0, max_rmsd),
-                     density=True, orientation='horizontal',
-                     alpha=1, color='black')
-                     
+                      density=True, orientation='horizontal',
+                      alpha=1, color='black')
+                      
+        # Set axis limits
+        ax_main.set_xlim(0, max_rmsd)
+        ax_main.set_ylim(0, max_rmsd)
+        
         # Customize appearance
         ax_histx.spines['right'].set_visible(False)
         ax_histx.spines['top'].set_visible(False)
@@ -188,6 +216,9 @@ class RMSDVisualizer:
         ax_main.set_xlabel(r"RMSD vs Reference 1 (Å)", labelpad=10)
         ax_main.set_ylabel(r"RMSD vs Reference 2 (Å)", labelpad=10)
         
+        # Add grid
+        ax_main.grid(True, linestyle='--', alpha=0.3)
+        
         if title:
             plt.suptitle(title, fontweight='bold', y=0.95)
             
@@ -197,6 +228,113 @@ class RMSDVisualizer:
             plt.show()
             
         return fig
+
+    def plot_multiple_landscapes(
+        self,
+        results_dict: Dict[str, List[RMSDResult]],
+        control_results: Optional[List[RMSDResult]] = None,
+        show: bool = True
+    ) -> plt.Figure:
+        """
+        Create multiple RMSD landscape plots as subplots.
+        
+        Args:
+            results_dict: Dictionary mapping structure names to RMSD results
+            control_results: Optional control structure results
+            show: Whether to display the plot
+            
+        Returns:
+            Matplotlib figure
+        """
+        n_plots = len(results_dict) + (1 if control_results else 0)
+        n_cols = min(2, n_plots)
+        n_rows = (n_plots + n_cols - 1) // n_cols
+        
+        # Find global max RMSD for consistent axes
+        max_rmsd = 0
+        if control_results:
+            max_rmsd = max(
+                max(r.rmsd_ref1 for r in control_results),
+                max(r.rmsd_ref2 for r in control_results if r.rmsd_ref2 is not None)
+            )
+        
+        for results in results_dict.values():
+            max_rmsd = max(
+                max_rmsd,
+                max(r.rmsd_ref1 for r in results),
+                max(r.rmsd_ref2 for r in results if r.rmsd_ref2 is not None)
+            )
+        
+        # Create figure
+        fig = plt.figure(figsize=(self.config.plot_width * n_cols, 
+                                 self.config.plot_height * n_rows))
+        
+        plot_idx = 1
+        if control_results:
+            ax = plt.subplot(n_rows, n_cols, plot_idx)
+            self._plot_single_landscape(
+                ax,
+                [r.rmsd_ref1 for r in control_results],
+                [r.rmsd_ref2 for r in control_results if r.rmsd_ref2 is not None],
+                max_rmsd,
+                "Control"
+            )
+            plot_idx += 1
+        
+        for name, results in results_dict.items():
+            ax = plt.subplot(n_rows, n_cols, plot_idx)
+            self._plot_single_landscape(
+                ax,
+                [r.rmsd_ref1 for r in results],
+                [r.rmsd_ref2 for r in results if r.rmsd_ref2 is not None],
+                max_rmsd,
+                name
+            )
+            plot_idx += 1
+        
+        plt.tight_layout()
+        
+        if show:
+            plt.show()
+        
+        return fig
+
+    def _plot_single_landscape(
+        self,
+        ax: plt.Axes,
+        rmsd_ref1: List[float],
+        rmsd_ref2: List[float],
+        max_rmsd: float,
+        title: str
+    ) -> None:
+        """Helper method to create a single landscape plot."""
+        # Create 2D histogram
+        H, xedges, yedges = np.histogram2d(
+            rmsd_ref1, rmsd_ref2,
+            bins=50,
+            range=[[0, max_rmsd], [0, max_rmsd]]
+        )
+        
+        # Plot heatmap
+        vmin = 0.1
+        vmax = H.max()
+        im = ax.pcolormesh(xedges, yedges, H.T,
+                           norm=LogNorm(vmin=vmin, vmax=vmax),
+                           cmap=self.cmap)
+        
+        # Add diagonal line
+        ax.plot([0, max_rmsd], [0, max_rmsd], 'k--', alpha=0.5, linewidth=1)
+        
+        # Customize appearance
+        ax.set_xlabel(r"RMSD vs Reference 1 (Å)")
+        ax.set_ylabel(r"RMSD vs Reference 2 (Å)")
+        ax.set_title(title)
+        ax.grid(True, linestyle='--', alpha=0.3)
+        ax.set_xlim(0, max_rmsd)
+        ax.set_ylim(0, max_rmsd)
+        
+        # Add colorbar
+        plt.colorbar(im, ax=ax, label='log(counts)')
 
     def create_interactive_plot(
         self,
@@ -218,19 +356,39 @@ class RMSDVisualizer:
         n_cols = min(2, n_plots)
         n_rows = (n_plots + n_cols - 1) // n_cols
         
-        # Create subplots
+        # Find global max RMSD for consistent axes
+        max_rmsd = 0
+        if control_results:
+            max_rmsd = max(
+                max(r.rmsd_ref1 for r in control_results),
+                max(r.rmsd_ref2 for r in control_results if r.rmsd_ref2 is not None)
+            )
+        
+        for results in results_dict.values():
+            max_rmsd = max(
+                max_rmsd,
+                max(r.rmsd_ref1 for r in results),
+                max(r.rmsd_ref2 for r in results if r.rmsd_ref2 is not None)
+            )
+        
+        # Add some padding to max_rmsd
+        max_rmsd = max_rmsd * 1.1
+        
+        # Create subplots with shared axes
         fig = make_subplots(
             rows=n_rows,
             cols=n_cols,
-            subplot_titles=['Control' if control_results else ''] + list(results_dict.keys()),
+            subplot_titles=['Control (vanilla prediction)' if control_results else ''] + list(results_dict.keys()),
             shared_xaxes=True,
-            shared_yaxes=True
+            shared_yaxes=True,
+            horizontal_spacing=0.1,
+            vertical_spacing=0.1
         )
         
         # Define marker symbols
         marker_symbols = ['circle', 'diamond', 'square', 'triangle-up', 'star',
                          'pentagon', 'hexagon', 'cross', 'x', 'triangle-down']
-                         
+        
         # Plot data
         plot_idx = 0
         row = 1
@@ -244,7 +402,7 @@ class RMSDVisualizer:
             plot_idx += 1
             col = col + 1 if col < n_cols else 1
             row = row + 1 if col == 1 else row
-            
+        
         for structure_name, results in results_dict.items():
             self._add_scatter_trace(
                 fig, results, structure_name,
@@ -254,8 +412,8 @@ class RMSDVisualizer:
             plot_idx += 1
             col = col + 1 if col < n_cols else 1
             row = row + 1 if col == 1 else row
-            
-        # Update layout
+        
+        # Update layout with consistent axes and diagonal line
         fig.update_layout(
             title_text="RMSD Comparison (colored by pLDDT)",
             showlegend=True,
@@ -264,6 +422,41 @@ class RMSDVisualizer:
             template="plotly_white",
             margin=dict(r=120)
         )
+        
+        # Update all subplots to have the same range and add diagonal line
+        for i in range(1, n_rows + 1):
+            for j in range(1, n_cols + 1):
+                # Add diagonal line
+                fig.add_trace(
+                    go.Scatter(
+                        x=[0, max_rmsd],
+                        y=[0, max_rmsd],
+                        mode='lines',
+                        line=dict(color='black', dash='dash', width=1),
+                        showlegend=False,
+                        hoverinfo='skip'
+                    ),
+                    row=i,
+                    col=j
+                )
+                
+                # Update X axes - only show title for bottom row
+                fig.update_xaxes(
+                    title_text="RMSD vs Reference 1 (Å)" if i == n_rows else None,
+                    range=[0, max_rmsd],
+                    zeroline=True,
+                    row=i,
+                    col=j
+                )
+                
+                # Update Y axes - only show title for leftmost plots
+                fig.update_yaxes(
+                    title_text="RMSD vs Reference 2 (Å)" if j == 1 else None,
+                    range=[0, max_rmsd],
+                    zeroline=True,
+                    row=i,
+                    col=j
+                )
         
         return fig
         
@@ -280,6 +473,8 @@ class RMSDVisualizer:
         plddt_values = [r.plddt for r in results if r.plddt is not None]
         rmsd1_values = [r.rmsd_ref1 for r in results if r.plddt is not None]
         rmsd2_values = [r.rmsd_ref2 for r in results if r.plddt is not None and r.rmsd_ref2 is not None]
+        
+        legend_name = 'Control (vanilla prediction)' if name == 'Control' else name
         
         fig.add_trace(
             go.Scatter(
@@ -304,7 +499,7 @@ class RMSDVisualizer:
                 text=[f"Model: {r.model_name}<br>pLDDT: {r.plddt:.2f}"
                       for r in results if r.plddt is not None],
                 hoverinfo='text',
-                name=f'{name} ({marker_symbol})'
+                name=f'{legend_name} ({marker_symbol})'
             ),
             row=row,
             col=col

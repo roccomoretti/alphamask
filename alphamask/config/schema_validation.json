@@ -1,0 +1,254 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DefaultPipeline",
+    "description": "A schema for validating parameters for the DefaultPipeline",
+    "type": "object",
+    "properties": {
+      "unified_memory": {
+        "description": "If True, use unified memory.",
+        "type": "boolean"
+      },
+      "parentPath": {
+        "description": "The path to the parent directory.",
+        "type": "string"
+      },
+      "setupPath": {
+        "description": "The path to the setup directory.",
+        "type": "string"
+      },
+      "sequence": {
+        "description": "The sequence to be processed.",
+        "type": "string"
+      },
+      "jobname": {
+        "description": "The name of the job.",
+        "type": "string"
+      },
+      "copies": {
+        "description": "The number of copies.",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 12
+      },
+      "msa_method": {
+        "description": "The method used for multiple sequence alignment. Options are 'mmseqs2','single_sequence', 'custom_fas', 'custom_a3m', 'custom_sto'.",
+        "type": "string",
+        "enum": ["mmseqs2", "single_sequence", "custom_fas", "custom_a3m", "custom_sto"]
+      },
+      "custom_a3m_path": {
+        "description": "The path to the custom msa, note that this will be only taken into consideration if msa_method==custom_a3m. Leave empty otherwise.",
+        "type": "string"
+      },
+      "pair_mode": {
+        "description": "The pairing mode. Options are 'unpaired_paired','paired','unpaired'.",
+        "type": "string",
+        "enum": ["unpaired_paired", "paired", "unpaired"]
+      },
+      "cov": {
+        "description": "Minimum coverage with query (%)",
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "id": {
+        "description": "Maximum pairwise sequence identity (%)",
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "qid": {
+        "description": "Minimum sequence identity with query (%)",
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "do_not_filter": {
+        "description": "If True, do not filter.",
+        "type": "boolean"
+      },
+      "template_mode": {
+        "description": "The template mode. Options are 'none', 'mmseqs2', 'custom'.",
+        "type": "string",
+        "enum": ["none", "mmseqs2", "custom"]
+      },
+      "pdb": {
+        "description": "The pdb.",
+        "type": "string"
+      },
+      "chain": {
+        "description": "The chain.",
+        "type": "string"
+      },
+      "rm_template_seq": {
+        "description": "If True, remove template sequence.",
+        "type": "boolean"
+      },
+      "propagate_to_copies": {
+        "description": "If True, propagate to copies.",
+        "type": "boolean"
+      },
+      "do_not_align": {
+        "description": "If True, do not align.",
+        "type": "boolean"
+      },
+      "model_type": {
+        "description": "The model type. Options are 'monomer (ptm)', 'pseudo_multimer (v3)', 'multimer (v3)', 'auto'.",
+        "type": "string",
+        "enum": ["monomer (ptm)", "pseudo_multimer (v3)", "multimer (v3)", "auto"]
+      },
+      "rank_by": {
+        "description": "The rank by. Options are 'auto', 'plddt', 'ptm'.",
+        "type": "string",
+        "enum": ["auto", "plddt", "ptm"]
+      },
+      "debug": {
+        "description": "If True, debug.",
+        "type": "boolean"
+      },
+      "use_initial_guess": {
+        "description": "If True, use initial guess.",
+        "type": "boolean"
+      },
+      "num_msa": {
+        "description": "The number of msa.",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 512
+      },
+      "num_extra_msa": {
+        "description": "The number of extra msa.",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4096
+      },
+      "use_cluster_profile": {
+        "description": "If True, use cluster profile.",
+        "type": "boolean"
+      },
+      "model": {
+        "description": "The model. Options are '1', '2', '3', '4', '5', 'all'.",
+        "type": "string",
+        "enum": ["1", "2", "3", "4", "5", "all"]
+      },
+      "num_recycles": {
+        "description": "The number of recycles.",
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1000
+      },
+      "recycle_early_stop_tolerance": {
+        "description": "The recycle early stop tolerance.",
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0
+      },
+      "select_best_across_recycles": {
+        "description": "If True, select best across recycles.",
+        "type": "boolean"
+      },
+      "use_mlm": {
+        "description": "If True, use mlm.",
+        "type": "boolean"
+      },
+      "use_dropout": {
+        "description": "If True, use dropout.",
+        "type": "boolean"
+      },
+      "seed": {
+        "description": "The seed.",
+        "type": "integer"
+      },
+      "num_seeds": {
+        "description": "The number of seeds.",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000
+      },
+      "show_images": {
+        "description": "If True, show images.",
+        "type": "boolean"
+      },
+      "masking_mode": {
+        "description": "The masking mode.",
+        "type": "string",
+        "enum": ["off", "list", "ranges", "random"]
+      },
+      "mask_msa": {
+        "description": "If True, mask msa.",
+        "type": "boolean"
+      },
+      "mask_deletion_matrix": {
+        "description": "If True, mask deletion matrix.",
+        "type": "boolean"
+      },
+      "cols": {
+        "description": "List of integers.",
+        "type": "array",
+        "items": {
+          "type": "integer"
+        }
+      },
+      "cols_range": {
+        "description": "List of tuples(ranges of columns).",
+        "type": "array",
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      },
+      "mask_identity": {
+        "description": "Target identity of the masked columns. X is used by default.",
+        "type": "string",
+        "enum": ["A", "R", "N", "D", "C", "Q", "E", "G", "H", "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V", "X", "-"]
+      },
+      "overwrite": {
+        "description": "If True, use slurm.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "unified_memory",
+      "parentPath",
+      "sequence",
+      "jobname",
+      "copies",
+      "msa_method",
+      "pair_mode",
+      "cov",
+      "id",
+      "qid",
+      "do_not_filter",
+      "template_mode",
+      "pdb",
+      "chain",
+      "rm_template_seq",
+      "propagate_to_copies",
+      "do_not_align",
+      "model_type",
+      "rank_by",
+      "debug",
+      "use_initial_guess",
+      "num_msa",
+      "num_extra_msa",
+      "use_cluster_profile",
+      "model",
+      "num_recycles",
+      "recycle_early_stop_tolerance",
+      "select_best_across_recycles",
+      "use_mlm",
+      "use_dropout",
+      "seed",
+      "num_seeds",
+      "show_images",
+      "masking_mode",
+      "mask_msa",
+      "mask_deletion_matrix",
+      "cols",
+      "cols_range",
+      "mask_identity"
+    ]
+  }

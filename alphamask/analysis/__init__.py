@@ -9,10 +9,15 @@ from typing import Dict, List, Optional, Union, Any
 from pathlib import Path
 import logging
 from dataclasses import dataclass
+import plotly.io as pio
+from IPython.display import display
 
 from .rmsd import RMSDConfig, RMSDResult, RMSDCalculator
 from .statistics import RMSDStatistics, RMSDAnalyzer
 from .visualization import PlotConfig, RMSDVisualizer
+
+# Configure plotly to render in notebooks
+pio.renderers.default = 'notebook'
 
 logger = logging.getLogger(__name__)
 
@@ -130,19 +135,20 @@ class RMSDAnalysis:
                 show=self.config.show_plots
             )
             
-            landscape_figs = {}
-            for name, results in results_dict.items():
-                landscape_figs[name] = self.visualizer.plot_rmsd_landscape(
-                    [r.rmsd_ref1 for r in results],
-                    [r.rmsd_ref2 for r in results] if ref_coords2 else None,
-                    title=f"{name} RMSD Landscape",
-                    show=self.config.show_plots
-                )
-                
+            landscape_fig = self.visualizer.plot_multiple_landscapes(
+                results_dict,
+                control_results,
+                show=self.config.show_plots
+            )
+            
             interactive_fig = self.visualizer.create_interactive_plot(
                 results_dict,
                 control_results
             )
+            
+            # Display the interactive plot immediately if show_plots is True
+            if self.config.show_plots:
+                display(interactive_fig)
             
             # Save plots if requested
             if self.config.save_plots and self.config.output_dir:
@@ -151,9 +157,8 @@ class RMSDAnalysis:
                 plots_dir.mkdir(exist_ok=True)
                 
                 violin_fig.savefig(plots_dir / "violin_distributions.png", dpi=300)
-                for name, fig in landscape_figs.items():
-                    fig.savefig(plots_dir / f"{name}_landscape.png", dpi=300)
-                interactive_fig.write_html(plots_dir / "interactive_plot.html")
+                landscape_fig.savefig(plots_dir / "landscapes.png", dpi=300)
+                interactive_fig.write_html(str(plots_dir / "interactive_plot.html"))
                 
         # Save results
         if self.config.output_dir:
@@ -173,7 +178,7 @@ class RMSDAnalysis:
             },
             "plots": {
                 "violin": violin_fig,
-                "landscapes": landscape_figs,
+                "landscape": landscape_fig,
                 "interactive": interactive_fig
             } if (self.config.save_plots or self.config.show_plots) else None
         }
