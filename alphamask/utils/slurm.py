@@ -2,6 +2,7 @@ import os
 import yaml
 import time
 import subprocess
+import shutil
 from pathlib import Path
 from typing import Dict, List, Union, Optional, Tuple
 from dataclasses import dataclass
@@ -82,6 +83,10 @@ class SlurmJobManager:
         self.working_dir = Path(working_dir) if working_dir else Path.cwd()
         self.jobs: Dict[int, SlurmJob] = {}
         self.failed_jobs: List[int] = []
+        self.has_slurm = self._check_slurm_available()
+        
+        if not self.has_slurm:
+            logger.warning("SLURM not detected - jobs will run sequentially")
         
         # Create necessary directories
         self.setup_directories()
@@ -124,7 +129,14 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
         return str(script_path)
 
     def submit_job(self, config_path: str, job_name: str) -> Optional[int]:
-        """Submit a single job to SLURM"""
+        """Submit a job either to SLURM or run it directly"""
+        if self.has_slurm:
+            return self._submit_slurm_job(config_path, job_name)
+        else:
+            return self._run_job_locally(config_path, job_name)
+
+    def _submit_slurm_job(self, config_path: str, job_name: str) -> Optional[int]:
+        """Submit job to SLURM"""
         script_path = self.create_job_script(config_path, job_name)
         
         try:
@@ -135,19 +147,42 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
                 check=True
             )
             job_id = int(result.stdout.strip().split()[-1])
-            
-            job = SlurmJob(
-                job_id=job_id,
-                name=job_name,
-                output_file=f"{self.working_dir}/logs/{job_name}.out",
-                error_file=f"{self.working_dir}/logs/{job_name}.err"
-            )
-            self.jobs[job_id] = job
-            
-            logger.info(f"Submitted job {job_name} with ID {job_id}")
+            logger.info(f"Submitted SLURM job {job_name} with ID {job_id}")
             return job_id
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to submit job {job_name}: {e}")
+            logger.error(f"Failed to submit SLURM job {job_name}: {e}")
+            return None
+
+    def _run_job_locally(self, config_path: str, job_name: str) -> Optional[int]:
+        """Run job locally using singularity"""
+        try:
+            logger.info(f"Running job {job_name} locally")
+            
+            cmd = [
+                "singularity", "exec", "--nv", "--cleanenv",
+                self.slurm_config.container_path,
+                "python", self.slurm_config.script_path,
+                "--yaml_file", config_path,
+                "--json_schema", self.slurm_config.schema_path
+            ]
+            
+            # Create output and error files
+            out_file = self.working_dir / f"{job_name}.out"
+            err_file = self.working_dir / f"{job_name}.err"
+            
+            with open(out_file, 'w') as stdout, open(err_file, 'w') as stderr:
+                process = subprocess.run(
+                    cmd,
+                    stdout=stdout,
+                    stderr=stderr,
+                    check=True
+                )
+            
+            logger.info(f"Completed job {job_name}")
+            return 0  # Return 0 as a pseudo job ID for local runs
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to run job {job_name} locally: {e}")
             return None
 
     def submit_iterative_masking_jobs(self) -> List[int]:
@@ -273,7 +308,11 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
             raise ValueError(f"Unsupported masking strategy: {self.experiment_config.masking_strategy}")
 
     def monitor_jobs(self, check_interval: int = 60) -> bool:
-        """Monitor submitted jobs until completion"""
+        """Monitor jobs until completion"""
+        if not self.has_slurm:
+            # For local runs, jobs are already complete when they return
+            return True
+            
         all_completed = False
         
         while not all_completed:
@@ -341,6 +380,14 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
         
         return new_job_ids 
 
+    def _check_slurm_available(self) -> bool:
+        """Check if SLURM is available in the system"""
+        return (
+            shutil.which('sbatch') is not None and 
+            shutil.which('squeue') is not None and
+            shutil.which('sacct') is not None
+        )
+
     def run_experiment(self) -> Tuple[bool, Optional[List[Dict]]]:
         """
         Run the complete experiment workflow
@@ -348,22 +395,34 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
         Returns:
             Tuple[bool, Optional[List[Dict]]]: (success, failed_jobs_info)
         """
-        # Submit control job if needed
-        if self.experiment_config.run_control or self.experiment_config.run_only_control:
-            control_job_id = self.submit_control_job()
-            if control_job_id is None:
-                logger.error("Failed to submit control job")
-                return False, None
-        
-        # Submit masking jobs if not running only control
-        if not self.experiment_config.run_only_control:
-            job_ids = self.submit_masking_jobs()
-            if not job_ids:
-                logger.error("Failed to submit masking jobs")
-                return False, None
-        
-        # Monitor all jobs
-        success = self.monitor_jobs()
-        failed_jobs_info = self.get_failed_jobs_info() if not success else None
-        
-        return success, failed_jobs_info
+        if self.has_slurm:
+            # Submit control job if needed
+            if self.experiment_config.run_control or self.experiment_config.run_only_control:
+                control_job_id = self.submit_control_job()
+                if control_job_id is None:
+                    logger.error("Failed to submit control job")
+                    return False, None
+            
+            # Submit masking jobs if not running only control
+            if not self.experiment_config.run_only_control:
+                job_ids = self.submit_masking_jobs()
+                if not job_ids:
+                    logger.error("Failed to submit masking jobs")
+                    return False, None
+            
+            # Monitor all jobs
+            success = self.monitor_jobs()
+            failed_jobs_info = self.get_failed_jobs_info() if not success else None
+            
+            return success, failed_jobs_info
+        else:
+            # For local runs, execute directly
+            try:
+                job_id = self.submit_job(
+                    str(self.working_dir / "config.yaml"),
+                    self.experiment_config.jobname_prefix
+                )
+                return job_id is not None, None
+            except Exception as e:
+                logger.error(f"Error running experiment locally: {e}")
+                return False, [{"error": str(e)}]

@@ -81,14 +81,24 @@ class RMSDAnalysis:
             ref_coords2 = self.calculator.extract_coordinates(ref_pdb2)
             
         # Process control structures if requested
-        control_results = None
-        if control_dir and self.config.include_control:
-            logger.info("Processing control structures")
-            control_results = self.calculator.process_models(
-                control_dir,
-                ref_coords1,
-                ref_coords2
-            )
+        if control_dir:
+            if self.config.include_control:
+                logger.info("Processing control structures from: %s", control_dir)
+                control_results = self.calculator.process_models(
+                    control_dir,
+                    ref_coords1,
+                    ref_coords2
+                )
+            else:
+                logger.info("Control directory provided but include_control=False, skipping control")
+                control_results = None
+        else:
+            logger.info("No control directory provided")
+            control_results = None
+            
+        # Add debug logging after processing control
+        if control_results:
+            logger.info("Successfully processed %d control structures", len(control_results))
             
         # Process model structures
         results_dict = {}

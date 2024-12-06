@@ -9,3 +9,4 @@ state2.pdb
 notebooks/rmsd_analysis/*
 notebooks/newplot.png
 
+notebooks/out/*

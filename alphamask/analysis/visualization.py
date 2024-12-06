@@ -66,6 +66,13 @@ class RMSDVisualizer:
         Returns:
             Matplotlib figure
         """
+        # Add debug logging
+        logger.debug("Creating violin plots with %d structure types", len(results_dict))
+        if control_results:
+            logger.debug("Including %d control structures", len(control_results))
+        else:
+            logger.debug("No control structures provided")
+        
         # Prepare data
         data = []
         
@@ -246,6 +253,13 @@ class RMSDVisualizer:
         Returns:
             Matplotlib figure
         """
+        # Add debug logging
+        logger.debug("Creating landscape plots with %d structure types", len(results_dict))
+        if control_results:
+            logger.debug("Including %d control structures", len(control_results))
+        else:
+            logger.debug("No control structures provided")
+        
         n_plots = len(results_dict) + (1 if control_results else 0)
         n_cols = min(2, n_plots)
         n_rows = (n_plots + n_cols - 1) // n_cols

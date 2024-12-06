@@ -6,7 +6,8 @@ setup(
     packages=find_packages(),
     scripts=[
         'alphamask/scripts/setup_experiments.py',
-        'alphamask/scripts/run_experiments.py'
+        'alphamask/scripts/run_experiments.py',
+        'predict.py'
     ],
     package_data={
         'alphamask': ['config/*.yaml', 'config/*.json'],
@@ -15,5 +16,6 @@ setup(
         'pyyaml',
         'typing',
         'pathlib',
+        'jsonschema',
     ],
 ) 

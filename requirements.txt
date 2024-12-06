@@ -1,0 +1,2 @@
+git+https://github.com/sokrypton/ColabDesign.git@gamma#egg=colabdesign
+git+https://github.com/engelberger/frustrapy.git@dev#egg=frustrapy 
