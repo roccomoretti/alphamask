@@ -17,7 +17,7 @@ setup(
     },
     install_requires=[
         'pyyaml',
-        'typing',
+        'typing-extensions>=4.12.0',
         'pathlib',
         'jsonschema',
         'numpy>=1.23,<2.0',
@@ -26,11 +26,9 @@ setup(
         'jax==0.4.26',
         'ipython',
         'plotly==5.24.1',
-        # Note: jaxlib with CUDA support needs to be installed separately
-        # Note: ColabDesign and frustrapy are installed from git repos
     ],
     dependency_links=[
-        "git+https://github.com/sokrypton/ColabDesign.git@gamma#egg=colabdesign",
+        "git+https://github.com/sokrypton/ColabDesign.git@70a821c877a1a1a7f09682b3b6272b72e0719975#egg=colabdesign",
         "git+https://github.com/engelberger/frustrapy.git@dev#egg=frustrapy",
     ],
     author="Felipe Engelberger",

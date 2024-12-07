@@ -25,9 +25,9 @@ dependencies = [
     "ipython",
     "plotly==5.24.1",
     "pyyaml",
-    "typing",
     "pathlib",
-    "jsonschema"
+    "jsonschema",
+    "typing-extensions>=4.12.0"
 ]
 
 [project.urls]
