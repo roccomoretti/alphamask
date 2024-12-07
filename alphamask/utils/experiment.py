@@ -3,7 +3,6 @@ import gc
 import jax
 import shutil
 from datetime import datetime
-from google.colab import files
 from typing import Tuple, List, Optional, Callable, Any
 
 from .types import MaskingStrategy, ExperimentConfig, ExperimentPaths
@@ -12,6 +11,13 @@ from .params import create_common_params
 
 logger = setup_logger()
 
+def is_colab_environment():
+    """Check if code is running in Google Colab."""
+    try:
+        from google.colab import files
+        return True
+    except ImportError:
+        return False
 
 class MaskingExperiment:
     def __init__(self, config: ExperimentConfig):
@@ -23,6 +29,11 @@ class MaskingExperiment:
         self.config = config
         self.paths = ExperimentPaths()
         self.common_params = create_common_params(config)
+        self.is_colab = is_colab_environment()
+        if self.is_colab:
+            from google.colab import files
+            self.colab_files = files
+            
         self._validate_inputs()
 
     def _validate_inputs(self):
@@ -122,9 +133,9 @@ class MaskingExperiment:
         )
 
         # Download the zip file if in Colab
-        try:
-            files.download(output_filename)
-        except NameError:
+        if self.is_colab:
+            self.colab_files.download(output_filename)
+        else:
             logger.info("Not running in Colab, skipping file download")
 
         return self.paths.mask_jobname
@@ -160,9 +171,9 @@ class MaskingExperiment:
         )
 
         # Download the zip file if in Colab
-        try:
-            files.download(output_filename)
-        except NameError:
+        if self.is_colab:
+            self.colab_files.download(output_filename)
+        else:
             logger.info("Not running in Colab, skipping file download")
 
         return self.paths.mask_mutate_jobname

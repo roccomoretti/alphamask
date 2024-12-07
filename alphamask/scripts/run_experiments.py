@@ -2,6 +2,7 @@
 import argparse
 import logging
 import json
+import os
 from pathlib import Path
 
 from alphamask.utils.slurm import SlurmJobConfig
@@ -27,64 +28,15 @@ def setup_logging(log_dir: Path):
         ]
     )
 
-def generate_prediction_config(protein_config: dict, protein_name: str) -> dict:
+def generate_prediction_config(config: dict, protein_name: str) -> dict:
     """Generate prediction configuration for a protein"""
-    base_config = {
-        "unified_memory": True,
-        "parentPath": str(Path("results") / protein_name),
-        "setupPath": str(Path("setup") / protein_name),
-        "copies": 1,
-        "msa_method": "mmseqs2",
-        "pair_mode": "unpaired",
-        "cov": 0,
-        "id": 90,
-        "qid": 0,
-        "do_not_filter": False,
-        "template_mode": "none",
-        "pdb": "",
-        "chain": "",
-        "rm_template_seq": False,
-        "propagate_to_copies": False,
-        "do_not_align": False,
-        "model_type": "monomer (ptm)",
-        "rank_by": "plddt",
-        "debug": False,
-        "use_initial_guess": False,
-        "num_msa": 512,
-        "num_extra_msa": 1024,
-        "use_cluster_profile": True,
-        "model": "all",
-        "num_recycles": 3,
-        "recycle_early_stop_tolerance": 0.5,
-        "select_best_across_recycles": True,
-        "use_mlm": False,
-        "use_dropout": True,
-        "seed": 42,
-        "num_seeds": 1,
-        "show_images": True,
-        "masking_mode": "off",
-        "mask_msa": False,
-        "mask_deletion_matrix": False,
-        "cols": [],
-        "cols_range": [],
-        "mask_identity": "X",
-        "overwrite": True
+    protein_config = config[protein_name]
+    return {
+        "sequence": protein_config["sequence"],
+        "mutations": protein_config.get("mutations", []),
+        "known_positions": protein_config.get("known_positions", []),
+        "frustra_positions": protein_config.get("frustra_positions", [])
     }
-    
-    # Update with protein-specific settings
-    protein_data = protein_config[protein_name]
-    base_config.update({
-        "sequence": protein_data["sequence"],
-        "jobname": f"{protein_name}_prediction"
-    })
-    
-    if "mutations" in protein_data:
-        base_config["mutations"] = protein_data["mutations"]
-    
-    if "known_positions" in protein_data:
-        base_config["cols"] = protein_data["known_positions"]
-    
-    return base_config
 
 def main():
     parser = argparse.ArgumentParser(description="Run AlphaMask experiments")
@@ -128,11 +80,20 @@ def main():
         action="store_true",
         help="Force local execution (don't use SLURM even if available)"
     )
+    parser.add_argument(
+        "--setup-base-path",
+        type=str,
+        default=os.path.expanduser("~/alphamask_setup"),
+        help="Base path for setup files (default: ~/alphamask_setup)"
+    )
     
     args = parser.parse_args()
     
+    # Get base directory from config path
+    base_dir = Path(args.config).parent.parent
+    
     # Set up logging
-    setup_logging(Path("logs"))
+    setup_logging(base_dir / "logs")
     logger = logging.getLogger(__name__)
     
     try:
@@ -151,11 +112,12 @@ def main():
             email=args.email if not args.force_local else None,
             container_path=args.container,
             script_path=args.script,
-            schema_path=args.schema
+            schema_path=args.schema,
+            setup_base_path=args.setup_base_path
         )
         
         # Create results directory
-        results_dir = Path("results")
+        results_dir = base_dir / "results"
         results_dir.mkdir(exist_ok=True)
         
         # Generate and save prediction configs
@@ -175,19 +137,23 @@ def main():
         ))
         
         logger.info("Starting I89 experiments")
-        run_i89_experiments(slurm_config, config)
+        run_i89_experiments(slurm_config, config, base_dir)
         
         logger.info("Starting HER2 experiments")
-        run_her2_experiments(slurm_config, config)
+        run_her2_experiments(slurm_config, config, base_dir)
         
         logger.info("Starting RfaH experiments")
-        run_rfah_experiments(slurm_config, config)
+        run_rfah_experiments(slurm_config, config, base_dir)
         
         logger.info("All experiments completed successfully")
         
     except Exception as e:
         logger.error(f"Error running experiments: {str(e)}", exc_info=True)
         raise
+
+def run():
+    """Entry point for console script"""
+    main()
 
 if __name__ == "__main__":
     main() 

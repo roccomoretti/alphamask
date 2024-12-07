@@ -2,17 +2,32 @@ from setuptools import setup, find_packages
 
 setup(
     name="alphamask",
-    version="0.1.0",
+    version="0.1.1",
     packages=find_packages(),
+    entry_points={
+        'console_scripts': [
+            'alphamask-setup=alphamask.scripts.setup_experiments:run',
+            'alphamask-run=alphamask.scripts.run_experiments:main',
+            'alphamask-predict=predict:main',
+            'alphamask-check-jax=check_jax:main',
+        ],
+    },
+    package_data={
+        'alphamask': ['config/*.yaml', 'config/*.json'],
+    },
     install_requires=[
-        "biopython>=1.84",
-        "igraph>=0.11.8",
-        "leidenalg>=0.10.2",
-        "kaleido==0.2.1",
-        "numpy>=2.1.3",
-        "texttable>=1.7.0",
+        'pyyaml',
+        'typing',
+        'pathlib',
+        'jsonschema',
+        'numpy>=1.23,<2.0',
+        'cudf-cu12>=24.4.0',
+        'numba>=0.57,<0.61',
+        'jax==0.4.26',
+        'ipython',
+        'plotly==5.24.1',
+        # Note: jaxlib with CUDA support needs to be installed separately
         # Note: ColabDesign and frustrapy are installed from git repos
-        # and should be installed separately or listed as dependency links
     ],
     dependency_links=[
         "git+https://github.com/sokrypton/ColabDesign.git@gamma#egg=colabdesign",

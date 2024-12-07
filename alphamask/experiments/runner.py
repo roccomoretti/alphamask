@@ -33,7 +33,7 @@ def validate_protein_config(config: dict) -> None:
             if field not in protein_config:
                 raise ValueError(f"Missing {field} in {protein} configuration")
 
-def run_her2_experiments(slurm_config: Optional[SlurmJobConfig] = None, config: Optional[dict] = None):
+def run_her2_experiments(slurm_config: Optional[SlurmJobConfig] = None, config: Optional[dict] = None, base_dir: Optional[Path] = None):
     """Run all experiments for HER2"""
     if config is None:
         config = load_protein_config()
@@ -43,7 +43,8 @@ def run_her2_experiments(slurm_config: Optional[SlurmJobConfig] = None, config: 
         name="HER2",
         sequence=her2_config['sequence'],
         mutations=her2_config['mutations'],
-        known_positions=her2_config['known_positions']
+        known_positions=her2_config['known_positions'],
+        parent_path=str(base_dir) if base_dir else "."
     )
     
     experiments = [
@@ -57,7 +58,7 @@ def run_her2_experiments(slurm_config: Optional[SlurmJobConfig] = None, config: 
         if not experiment.run():
             logger.error(f"Failed to run {experiment.name} for HER2")
 
-def run_rfah_experiments(slurm_config: Optional[SlurmJobConfig] = None, config: Optional[dict] = None):
+def run_rfah_experiments(slurm_config: Optional[SlurmJobConfig] = None, config: Optional[dict] = None, base_dir: Optional[Path] = None):
     """Run all experiments for RfaH"""
     if config is None:
         config = load_protein_config()
@@ -68,7 +69,8 @@ def run_rfah_experiments(slurm_config: Optional[SlurmJobConfig] = None, config: 
         sequence=rfah_config['sequence'],
         mutations=rfah_config['mutations'],
         known_positions=rfah_config['known_positions'],
-        frustra_positions=rfah_config['frustra_positions']
+        frustra_positions=rfah_config['frustra_positions'],
+        parent_path=str(base_dir) if base_dir else "."
     )
     
     experiments = [
@@ -85,7 +87,7 @@ def run_rfah_experiments(slurm_config: Optional[SlurmJobConfig] = None, config: 
         if not experiment.run():
             logger.error(f"Failed to run {experiment.name} for RfaH")
 
-def run_i89_experiments(slurm_config: Optional[SlurmJobConfig] = None, config: Optional[dict] = None):
+def run_i89_experiments(slurm_config: Optional[SlurmJobConfig] = None, config: Optional[dict] = None, base_dir: Optional[Path] = None):
     """Run all experiments for I89"""
     if config is None:
         config = load_protein_config()
@@ -95,7 +97,8 @@ def run_i89_experiments(slurm_config: Optional[SlurmJobConfig] = None, config: O
         name="I89",
         sequence=i89_config['sequence'],
         known_positions=i89_config['known_positions'],
-        frustra_positions=i89_config['frustra_positions']
+        frustra_positions=i89_config['frustra_positions'],
+        parent_path=str(base_dir) if base_dir else "."
     )
     
     experiments = [

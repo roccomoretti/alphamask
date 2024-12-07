@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import yaml
 import logging
 from pathlib import Path
 from typing import Dict, Any
@@ -26,10 +27,15 @@ def setup_logging(log_dir: Path):
         ]
     )
 
-def load_json_config(config_path: str) -> Dict[str, Any]:
-    """Load configuration from JSON file"""
+def load_config(config_path: str) -> Dict[str, Any]:
+    """Load configuration from JSON or YAML file"""
     with open(config_path, 'r') as f:
-        return json.load(f)
+        if config_path.endswith('.json'):
+            return json.load(f)
+        elif config_path.endswith('.yaml') or config_path.endswith('.yml'):
+            return yaml.safe_load(f)
+        else:
+            raise ValueError("Config file must be either JSON or YAML")
 
 def validate_config(config: Dict[str, Any], schema_path: str) -> None:
     """Validate configuration against JSON schema"""
@@ -45,14 +51,20 @@ def validate_config(config: Dict[str, Any], schema_path: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Run AlphaFold predictions")
-    parser.add_argument(
+    config_group = parser.add_mutually_exclusive_group(required=True)
+    config_group.add_argument(
         "--config",
         type=str,
-        required=True,
         help="Path to JSON configuration file"
+    )
+    config_group.add_argument(
+        "--yaml_file",
+        type=str,
+        help="Path to YAML configuration file"
     )
     parser.add_argument(
         "--schema",
+        "--json_schema",  # Add alias for backward compatibility
         type=str,
         required=True,
         help="Path to JSON schema file"
@@ -73,7 +85,8 @@ def main():
     
     try:
         # Load and validate configuration
-        config = load_json_config(args.config)
+        config_path = args.config if args.config else args.yaml_file
+        config = load_config(config_path)
         validate_config(config, args.schema)
         
         # Select pipeline based on argument

@@ -54,7 +54,7 @@ class DefaultPipeline:
             "select_best_across_recycles", "use_mlm", "use_dropout",
             "seed", "num_seeds", "show_images", "masking_mode",
             "mask_msa", "mask_deletion_matrix", "cols", "cols_range",
-            "mask_identity", "mutations"
+            "mask_identity", "mutations", "show_figures", "overwrite"
         ]
         
         self.param_types = {
@@ -100,6 +100,8 @@ class DefaultPipeline:
             "cols_range": list,
             "mask_identity": str,
             "mutations": list,
+            "show_figures": bool,
+            "overwrite": bool
         }
         
         self.param_ranges = {

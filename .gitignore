@@ -10,3 +10,5 @@ notebooks/rmsd_analysis/*
 notebooks/newplot.png
 
 notebooks/out/*
+my_experiments/*
+logs/prediction.log

@@ -10,11 +10,18 @@ from IPython import get_ipython
 import subprocess
 import tempfile
 import gc
-from google.colab import files
 import jax
 import jax.numpy as jnp
 
 from colabdesign.af.contrib import predict
+
+def is_colab_environment():
+    """Check if code is running in Google Colab."""
+    try:
+        from google.colab import files
+        return True
+    except ImportError:
+        return False
 
 class PrepInputs:
     """
@@ -114,6 +121,12 @@ class PrepInputs:
             url = "https://raw.githubusercontent.com/sokrypton/ColabFold/main/colabfold/colabfold.py"
             urllib.request.urlretrieve(url, str(colabfold_utils))
 
+        # Initialize colab-specific attributes
+        self.is_colab = is_colab_environment()
+        if self.is_colab:
+            from google.colab import files
+            self.colab_files = files
+            
     def filter_options(self) -> None:
         """Filter and validate input options."""
         self.sequence = self.sequence.upper()
@@ -253,14 +266,12 @@ class PrepInputs:
         msa_format = self.msa_method.split("_")[1]
         print(f"MSA mode: {self.msa_method}")
         
-        is_colab = "google.colab" in str(get_ipython())
-        print(f"google_colab: {is_colab}")
-        print(f"local_run: {not is_colab}")
+        print(f"google_colab: {self.is_colab}")
+        print(f"local_run: {not self.is_colab}")
 
-        if is_colab and not self.custom_a3m_path:
+        if self.is_colab and not self.custom_a3m_path:
             print("WARNING: uploading MSA file via google colab api")
-            from google.colab import files
-            msa_dict = files.upload()
+            msa_dict = self.colab_files.upload()
             lines = []
             for k, v in msa_dict.items():
                 lines += v.decode().splitlines()
@@ -395,11 +406,14 @@ class PrepInputs:
             if self.has_templates:
                 def get_pdb_local(pdb_code):
                     if pdb_code is None or pdb_code == "":
-                        upload_dict = files.upload()
-                        pdb_string = upload_dict[list(upload_dict.keys())[0]]
-                        with open("tmp.pdb", "wb") as out:
-                            out.write(pdb_string)
-                        return "tmp.pdb"
+                        if self.is_colab:
+                            upload_dict = self.colab_files.upload()
+                            pdb_string = upload_dict[list(upload_dict.keys())[0]]
+                            with open("tmp.pdb", "wb") as out:
+                                out.write(pdb_string)
+                            return "tmp.pdb"
+                        else:
+                            raise ValueError("PDB code cannot be empty in local environment")
                     elif os.path.isfile(pdb_code):
                         return pdb_code
                     elif len(pdb_code) == 4:

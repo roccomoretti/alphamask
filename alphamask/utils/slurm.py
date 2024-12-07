@@ -35,6 +35,12 @@ class SlurmJobConfig:
     container_path: str = ""
     script_path: str = ""
     schema_path: str = ""
+    setup_base_path: Optional[str] = None
+
+    def __post_init__(self):
+        """Set default setup base path if not provided"""
+        if self.setup_base_path is None:
+            self.setup_base_path = os.path.expanduser("~/alphamask_setup")
 
 class SlurmJob:
     def __init__(self, job_id: int, name: str, output_file: str, error_file: str):
@@ -84,6 +90,9 @@ class SlurmJobManager:
         self.jobs: Dict[int, SlurmJob] = {}
         self.failed_jobs: List[int] = []
         self.has_slurm = self._check_slurm_available()
+        
+        # Set setup base path in experiment config
+        self.experiment_config.setup_base_path = self.slurm_config.setup_base_path
         
         if not self.has_slurm:
             logger.warning("SLURM not detected - jobs will run sequentially")
@@ -158,31 +167,82 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
         try:
             logger.info(f"Running job {job_name} locally")
             
+            # Convert all paths to absolute paths
+            workspace_dir = Path.cwd().resolve()
+            script_path = workspace_dir / self.slurm_config.script_path
+            config_path = workspace_dir / config_path
+            schema_path = workspace_dir / self.slurm_config.schema_path
+            working_dir = workspace_dir / self.working_dir
+            
+            # Create config directory and file
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, 'w') as f:
+                yaml.dump(self.experiment_config.to_dict(), f)
+            
+            # Create bind paths for singularity
+            bind_paths = [
+                f"{workspace_dir}:{workspace_dir}",
+                f"{working_dir}:{working_dir}"
+            ]
+            
             cmd = [
-                "singularity", "exec", "--nv", "--cleanenv",
+                "singularity", "exec",
+                "--nv",
+                "--cleanenv",
+                *[f"--bind={path}" for path in bind_paths],
                 self.slurm_config.container_path,
-                "python", self.slurm_config.script_path,
-                "--yaml_file", config_path,
-                "--json_schema", self.slurm_config.schema_path
+                "python", str(script_path),
+                "--yaml_file", str(config_path),
+                "--json_schema", str(schema_path)
             ]
             
             # Create output and error files
-            out_file = self.working_dir / f"{job_name}.out"
-            err_file = self.working_dir / f"{job_name}.err"
+            out_file = working_dir / "logs" / f"{job_name}.out"
+            err_file = working_dir / "logs" / f"{job_name}.err"
+            out_file.parent.mkdir(exist_ok=True)
             
-            with open(out_file, 'w') as stdout, open(err_file, 'w') as stderr:
-                process = subprocess.run(
-                    cmd,
-                    stdout=stdout,
-                    stderr=stderr,
-                    check=True
+            logger.info(f"Command: {' '.join(cmd)}")
+            logger.info(f"Working directory: {working_dir}")
+            logger.info(f"Script path: {script_path}")
+            logger.info(f"Config path: {config_path}")
+            logger.info(f"Schema path: {schema_path}")
+            logger.info(f"Output file: {out_file}")
+            logger.info(f"Error file: {err_file}")
+            
+            # Run the command and capture output
+            process = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False  # Don't raise exception, we'll handle it
+            )
+            
+            # Save output and error to files
+            with open(out_file, 'w') as f:
+                f.write(process.stdout)
+            with open(err_file, 'w') as f:
+                f.write(process.stderr)
+            
+            if process.returncode != 0:
+                logger.error(f"Command failed with return code {process.returncode}")
+                logger.error("Command output:")
+                logger.error(process.stdout)
+                logger.error("Command error:")
+                logger.error(process.stderr)
+                raise subprocess.CalledProcessError(
+                    process.returncode, cmd, 
+                    output=process.stdout, 
+                    stderr=process.stderr
                 )
             
             logger.info(f"Completed job {job_name}")
             return 0  # Return 0 as a pseudo job ID for local runs
             
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to run job {job_name} locally: {e}")
+            logger.error(f"Failed to run job {job_name} locally")
+            logger.error(f"Command output: {e.output}")
+            logger.error(f"Command error: {e.stderr}")
             return None
 
     def submit_iterative_masking_jobs(self) -> List[int]:
