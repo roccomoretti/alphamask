@@ -25,7 +25,14 @@ def setup_experiment_directories(base_path: str, setup_base_path: str, force: bo
         "results/her2",
         "results/rfah",
         "results/i89",
-        "scripts"
+        "scripts",
+        # Add protein-specific config and script directories
+        "HER2/controls/vanilla/configs",
+        "HER2/controls/vanilla/scripts",
+        "RfaH/controls/vanilla/configs",
+        "RfaH/controls/vanilla/scripts", 
+        "I89/controls/vanilla/configs",
+        "I89/controls/vanilla/scripts"
     ]
     
     print(f"Setting up experiment directories in {base_dir}")
