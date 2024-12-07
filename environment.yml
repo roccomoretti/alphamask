@@ -58,7 +58,7 @@ dependencies:
     - jax==0.4.26
     - jax-cuda12-pjrt==0.4.26
     - jax-cuda12-plugin==0.4.26
-    - jaxlib==0.4.26+cuda12.cudnn89
+    - jaxlib==0.4.26
     - jedi==0.19.2
     - jmp==0.0.4
     - joblib==1.4.2
