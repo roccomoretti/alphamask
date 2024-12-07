@@ -28,9 +28,9 @@ class SlurmJobConfig:
     time: str = "24:00:00"
     memory: str = "300000"
     cpus_per_task: int = 1
-    gpu_type: str = "a30"
+    partition: str = "clara"
+    gpu_type: str = "rtx2080ti"
     gpu_count: int = 1
-    partition: str = "paula"
     email: Optional[str] = None
     container_path: str = ""
     script_path: str = ""
@@ -38,9 +38,19 @@ class SlurmJobConfig:
     setup_base_path: Optional[str] = None
 
     def __post_init__(self):
-        """Set default setup base path if not provided"""
+        """Set default setup base path and validate GPU configuration"""
         if self.setup_base_path is None:
             self.setup_base_path = os.path.expanduser("~/alphamask_setup")
+        
+        # Validate GPU configuration based on partition
+        if self.partition == "clara":
+            if self.gpu_type not in ["rtx2080ti"]:
+                logger.warning(f"GPU type {self.gpu_type} may not be available on partition {self.partition}. Using rtx2080ti instead.")
+                self.gpu_type = "rtx2080ti"
+        elif self.partition == "paula":
+            if self.gpu_type not in ["a100"]:
+                logger.warning(f"GPU type {self.gpu_type} may not be available on partition {self.partition}. Using a100 instead.")
+                self.gpu_type = "a100"
 
 class SlurmJob:
     def __init__(self, job_id: int, name: str, output_file: str, error_file: str):
@@ -115,8 +125,8 @@ class SlurmJobManager:
 #SBATCH --time={self.slurm_config.time}
 #SBATCH --mem={self.slurm_config.memory}
 #SBATCH --cpus-per-task={self.slurm_config.cpus_per_task}
-#SBATCH --gres=gpu:{self.slurm_config.gpu_type}:{self.slurm_config.gpu_count}
 #SBATCH --partition={self.slurm_config.partition}
+#SBATCH --gres=gpu:{self.slurm_config.gpu_type}:{self.slurm_config.gpu_count}
 """
 
         if self.slurm_config.email:
@@ -148,18 +158,64 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
         """Submit job to SLURM"""
         script_path = self.create_job_script(config_path, job_name)
         
+        # Log the script contents
+        logger.info(f"Generated SLURM script for {job_name}:")
+        with open(script_path, 'r') as f:
+            logger.info(f"\n{f.read()}")
+        
         try:
+            # Log the sbatch command
+            cmd = ["sbatch", script_path]
+            logger.info(f"Submitting SLURM job with command: {' '.join(cmd)}")
+            
+            # Run sbatch without check=True to handle the error ourselves
             result = subprocess.run(
-                ["sbatch", script_path],
+                cmd,
                 capture_output=True,
-                text=True,
-                check=True
+                text=True
             )
+            
+            # Log the complete output regardless of success/failure
+            logger.info(f"sbatch stdout:\n{result.stdout}")
+            if result.stderr:
+                logger.error(f"sbatch stderr:\n{result.stderr}")
+            
+            # Check return code and raise if non-zero
+            result.check_returncode()
+            
             job_id = int(result.stdout.strip().split()[-1])
-            logger.info(f"Submitted SLURM job {job_name} with ID {job_id}")
+            logger.info(f"Successfully submitted SLURM job {job_name} with ID {job_id}")
+            
+            # Log additional job info using scontrol
+            try:
+                scontrol_cmd = ["scontrol", "show", "job", str(job_id)]
+                scontrol_result = subprocess.run(scontrol_cmd, capture_output=True, text=True)
+                if scontrol_result.returncode == 0:
+                    logger.info(f"Job details:\n{scontrol_result.stdout}")
+                else:
+                    logger.warning(f"Could not get job details: {scontrol_result.stderr}")
+            except Exception as e:
+                logger.warning(f"Failed to get job details: {e}")
+            
             return job_id
+            
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to submit SLURM job {job_name}: {e}")
+            logger.error(f"Failed to submit SLURM job {job_name}")
+            logger.error(f"Command '{' '.join(e.cmd)}' failed with return code {e.returncode}")
+            logger.error(f"stdout: {e.stdout}")
+            logger.error(f"stderr: {e.stderr}")
+            
+            # Try to get SLURM system status
+            try:
+                sinfo_cmd = ["sinfo"]
+                sinfo_result = subprocess.run(sinfo_cmd, capture_output=True, text=True)
+                if sinfo_result.returncode == 0:
+                    logger.info(f"Current SLURM partition status:\n{sinfo_result.stdout}")
+                else:
+                    logger.warning(f"Could not get SLURM status: {sinfo_result.stderr}")
+            except Exception as se:
+                logger.warning(f"Failed to get SLURM status: {se}")
+            
             return None
 
     def _run_job_locally(self, config_path: str, job_name: str) -> Optional[int]:

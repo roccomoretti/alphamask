@@ -72,8 +72,14 @@ def main():
     parser.add_argument(
         "--partition", 
         type=str, 
-        default="paula",
+        default="clara",
         help="SLURM partition"
+    )
+    parser.add_argument(
+        "--gpu-type",
+        type=str,
+        default="rtx2080ti",
+        help="GPU type to request (e.g., rtx2080ti)"
     )
     parser.add_argument(
         "--force-local",
@@ -106,7 +112,7 @@ def main():
             time="24:00:00",
             memory="300000",
             cpus_per_task=1,
-            gpu_type="a30" if not args.force_local else None,
+            gpu_type=args.gpu_type if not args.force_local else None,
             gpu_count=1,
             partition=args.partition if not args.force_local else None,
             email=args.email if not args.force_local else None,
