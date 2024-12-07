@@ -127,7 +127,7 @@ def main():
         results_dir.mkdir(exist_ok=True)
         
         # Generate and save prediction configs
-        for protein_name in ["i89", "her2", "rfah"]:
+        for protein_name in ["i89"]: #, "her2", "rfah"
             protein_dir = results_dir / protein_name
             protein_dir.mkdir(exist_ok=True)
             
@@ -145,11 +145,11 @@ def main():
         logger.info("Starting I89 experiments")
         run_i89_experiments(slurm_config, config, base_dir)
         
-        logger.info("Starting HER2 experiments")
-        run_her2_experiments(slurm_config, config, base_dir)
+        # logger.info("Starting HER2 experiments")
+        # run_her2_experiments(slurm_config, config, base_dir)
         
-        logger.info("Starting RfaH experiments")
-        run_rfah_experiments(slurm_config, config, base_dir)
+        # logger.info("Starting RfaH experiments")
+        # run_rfah_experiments(slurm_config, config, base_dir)
         
         logger.info("All experiments completed successfully")
         

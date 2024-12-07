@@ -22,15 +22,15 @@ def setup_experiment_directories(base_path: str, setup_base_path: str, force: bo
     dirs = [
         "config",
         "logs",
-        "results/her2",
-        "results/rfah",
-        "results/i89",
+        #"results/her2",
+        #"results/rfah",
+        #"results/i89",
         "scripts",
         # Add protein-specific config and script directories
-        "HER2/controls/vanilla/configs",
-        "HER2/controls/vanilla/scripts",
-        "RfaH/controls/vanilla/configs",
-        "RfaH/controls/vanilla/scripts", 
+        #"HER2/controls/vanilla/configs",
+        #"HER2/controls/vanilla/scripts",
+        #"RfaH/controls/vanilla/configs",
+        #"RfaH/controls/vanilla/scripts", 
         "I89/controls/vanilla/configs",
         "I89/controls/vanilla/scripts"
     ]
@@ -51,7 +51,7 @@ def setup_experiment_directories(base_path: str, setup_base_path: str, force: bo
     pkg_config = Path(__file__).parent.parent / "config"
     
     config_files = {
-        "proteins.yaml": "config/proteins.yaml",
+        "test.yaml": "config/test.yaml",
         "schema_validation.json": "config/schema_validation.json"
     }
     

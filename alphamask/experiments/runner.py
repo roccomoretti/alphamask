@@ -19,8 +19,8 @@ def load_protein_config(config_path: str = "config/proteins.yaml") -> dict:
 def validate_protein_config(config: dict) -> None:
     """Validate protein configuration"""
     required_fields = {
-        'her2': ['sequence', 'mutations', 'known_positions'],
-        'rfah': ['sequence', 'mutations', 'known_positions', 'frustra_positions'],
+        # 'her2': ['sequence', 'mutations', 'known_positions'],
+        # 'rfah': ['sequence', 'mutations', 'known_positions', 'frustra_positions'],
         'i89': ['sequence', 'known_positions', 'frustra_positions']
     }
     

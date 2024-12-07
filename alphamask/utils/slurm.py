@@ -44,13 +44,23 @@ class SlurmJobConfig:
         
         # Validate GPU configuration based on partition
         if self.partition == "clara":
-            if self.gpu_type not in ["rtx2080ti"]:
-                logger.warning(f"GPU type {self.gpu_type} may not be available on partition {self.partition}. Using rtx2080ti instead.")
+            valid_gpus = ["rtx2080ti"]
+            if self.gpu_type not in valid_gpus:
+                logger.warning(f"GPU type {self.gpu_type} not available on partition {self.partition}. Using rtx2080ti.")
                 self.gpu_type = "rtx2080ti"
         elif self.partition == "paula":
-            if self.gpu_type not in ["a100"]:
-                logger.warning(f"GPU type {self.gpu_type} may not be available on partition {self.partition}. Using a100 instead.")
+            valid_gpus = ["a100"]
+            if self.gpu_type not in valid_gpus:
+                logger.warning(f"GPU type {self.gpu_type} not available on partition {self.partition}. Using a100.")
                 self.gpu_type = "a100"
+
+    def get_gpu_constraint(self) -> str:
+        """Get the correct GPU constraint string based on partition and GPU type"""
+        if self.partition == "clara":
+            return f"gpu:rtx2080ti:{self.gpu_count}"
+        elif self.partition == "paula":
+            return f"gpu:a100:{self.gpu_count}"
+        return f"gpu:{self.gpu_type}:{self.gpu_count}"
 
 class SlurmJob:
     def __init__(self, job_id: int, name: str, output_file: str, error_file: str):
@@ -118,15 +128,24 @@ class SlurmJobManager:
 
     def create_job_script(self, config_path: str, job_name: str) -> str:
         """Create a SLURM job script"""
+        # Get the experiment type directory from config_path
+        config_dir = Path(config_path).parent.parent
+        
+        # Create script and log directories if they don't exist
+        script_dir = config_dir / "scripts"
+        log_dir = config_dir / "logs"
+        script_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        
         script_content = f"""#!/bin/bash
 #SBATCH --job-name={job_name}
-#SBATCH --output={self.working_dir}/logs/{job_name}.out
-#SBATCH --error={self.working_dir}/logs/{job_name}.err
+#SBATCH --output={log_dir}/{job_name}.out
+#SBATCH --error={log_dir}/{job_name}.err
 #SBATCH --time={self.slurm_config.time}
 #SBATCH --mem={self.slurm_config.memory}
 #SBATCH --cpus-per-task={self.slurm_config.cpus_per_task}
 #SBATCH --partition={self.slurm_config.partition}
-#SBATCH --gres=gpu:{self.slurm_config.gpu_type}:{self.slurm_config.gpu_count}
+#SBATCH --gres={self.slurm_config.get_gpu_constraint()}
 """
 
         if self.slurm_config.email:
@@ -141,9 +160,13 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
     --json_schema {self.slurm_config.schema_path}
 """
 
-        script_path = self.working_dir / "scripts" / f"{job_name}.sh"
+        script_path = script_dir / f"{job_name}.sh"
         with open(script_path, 'w') as f:
             f.write(script_content)
+        
+        logger.info(f"Created job script at: {script_path}")
+        logger.info(f"Config path: {config_path}")
+        logger.info(f"Log directory: {log_dir}")
         
         return str(script_path)
 
@@ -191,7 +214,7 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
                 scontrol_cmd = ["scontrol", "show", "job", str(job_id)]
                 scontrol_result = subprocess.run(scontrol_cmd, capture_output=True, text=True)
                 if scontrol_result.returncode == 0:
-                    logger.info(f"Job details:\n{scontrol_result.stdout}")
+                    logger.debug(f"Job details:\n{scontrol_result.stdout}")
                 else:
                     logger.warning(f"Could not get job details: {scontrol_result.stderr}")
             except Exception as e:
@@ -306,12 +329,16 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
         job_ids = []
         sequence_length = len(self.experiment_config.sequence)
         
+        # Create configs directory if it doesn't exist
+        configs_dir = self.working_dir / "configs"
+        configs_dir.mkdir(parents=True, exist_ok=True)
+        
         for pos in range(1, sequence_length + 1):
             # Create config for this position
             config = self.experiment_config.to_dict()
             config["cols"] = [pos]
             
-            config_path = self.working_dir / "configs" / f"config_pos_{pos}.yaml"
+            config_path = configs_dir / f"config_pos_{pos}.yaml"
             with open(config_path, 'w') as f:
                 yaml.dump(config, f)
             
@@ -404,18 +431,34 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
         # Get protein name from jobname prefix
         protein_name = self.experiment_config.jobname_prefix.split("_")[0]
         
-        # Create config file in protein-specific directory
-        config_path = self.working_dir / protein_name / "controls/vanilla/configs/config_control.yaml"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        # Create config file in the correct directory structure
+        # Use working_dir directly to avoid path duplication
+        base_dir = self.working_dir / "controls" / "vanilla"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        
+        config_path = base_dir / "configs" / "config_control.yaml"
+        config_path.parent.mkdir(exist_ok=True)
+        
+        # Set parent path correctly
+        config["parentPath"] = str(base_dir)
         
         with open(config_path, 'w') as f:
             yaml.dump(config, f)
         
-        # Submit job
-        return self.submit_job(
+        logger.info(f"Created control config at: {config_path}")
+        
+        # Submit job with a descriptive name
+        job_id = self.submit_job(
             str(config_path),
-            f"{self.experiment_config.jobname_prefix}_control"
+            f"{protein_name}_vanilla_control"
         )
+        
+        if job_id:
+            logger.info(f"Submitted control job with ID {job_id}")
+        else:
+            logger.error("Failed to submit control job")
+        
+        return job_id
 
     def submit_masking_jobs(self) -> List[int]:
         """Submit jobs based on masking strategy"""
