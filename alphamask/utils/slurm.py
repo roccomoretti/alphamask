@@ -345,8 +345,13 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
         config = self.experiment_config.to_dict()
         config["cols"] = []
         
-        # Create config file
-        config_path = self.working_dir / "configs" / "config_control.yaml"
+        # Get protein name from jobname prefix
+        protein_name = self.experiment_config.jobname_prefix.split("_")[0]
+        
+        # Create config file in protein-specific directory
+        config_path = self.working_dir / protein_name / "controls/vanilla/configs/config_control.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        
         with open(config_path, 'w') as f:
             yaml.dump(config, f)
         
