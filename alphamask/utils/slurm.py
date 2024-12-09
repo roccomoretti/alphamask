@@ -106,7 +106,8 @@ class SlurmJobManager:
     ):
         self.experiment_config = experiment_config
         self.slurm_config = slurm_config
-        self.working_dir = Path(working_dir) if working_dir else Path.cwd()
+        # Resolve working directory to absolute path
+        self.working_dir = Path(working_dir if working_dir else ".").resolve()
         self.jobs: Dict[int, SlurmJob] = {}
         self.failed_jobs: List[int] = []
         self.has_slurm = self._check_slurm_available()
@@ -122,20 +123,45 @@ class SlurmJobManager:
 
     def setup_directories(self):
         """Create necessary directories for job management"""
-        (self.working_dir / "configs").mkdir(exist_ok=True)
-        (self.working_dir / "scripts").mkdir(exist_ok=True)
-        (self.working_dir / "logs").mkdir(exist_ok=True)
+        # Create subdirectories in working directory
+        (self.working_dir / "configs").mkdir(parents=True, exist_ok=True)
+        (self.working_dir / "scripts").mkdir(parents=True, exist_ok=True)
+        (self.working_dir / "logs").mkdir(parents=True, exist_ok=True)
+        
+        # Store paths for later use
+        self.config_dir = self.working_dir / "configs"
+        self.script_dir = self.working_dir / "scripts"
+        self.log_dir = self.working_dir / "logs"
+        
+        # Log directory structure
+        logger.info(f"Created directory structure:")
+        logger.info(f"Working directory: {self.working_dir}")
+        logger.info(f"Config directory: {self.config_dir}")
+        logger.info(f"Script directory: {self.script_dir}")
+        logger.info(f"Log directory: {self.log_dir}")
 
     def create_job_script(self, config_path: str, job_name: str) -> str:
         """Create a SLURM job script"""
-        # Get the experiment type directory from config_path
-        config_dir = Path(config_path).parent.parent
+        # Get the base directory from config path
+        config_path = Path(config_path).resolve()
+        schema_path = Path(self.slurm_config.schema_path).resolve()
         
         # Create script and log directories if they don't exist
-        script_dir = config_dir / "scripts"
-        log_dir = config_dir / "logs"
+        script_dir = Path(self.working_dir) / "scripts"
+        log_dir = Path(self.working_dir) / "logs"
         script_dir.mkdir(parents=True, exist_ok=True)
         log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Define local schema path
+        schema_local_path = Path(self.working_dir) / "config" / "schema_validation.json"
+        
+        # Log the paths being used
+        logger.info(f"Config path: {config_path}")
+        logger.info(f"Schema path: {schema_path}")
+        logger.info(f"Schema local path: {schema_local_path}")
+        logger.info(f"Working directory: {self.working_dir}")
+        logger.info(f"Script directory: {script_dir}")
+        logger.info(f"Log directory: {log_dir}")
         
         script_content = f"""#!/bin/bash
 #SBATCH --job-name={job_name}
@@ -154,19 +180,43 @@ class SlurmJobManager:
 """
 
         script_content += f"""
+# Print paths for debugging
+echo "Working directory: $(pwd)"
+echo "Config path: {config_path}"
+echo "Script path: {self.slurm_config.script_path}"
+echo "Schema path: {schema_path}"
+
+cd {self.working_dir}
+
+# Verify paths exist
+if [ ! -f "{config_path}" ]; then
+    echo "Error: Config file not found at {config_path}"
+    exit 1
+fi
+
+if [ ! -f "{schema_path}" ]; then
+    echo "Error: Schema file not found at {schema_path}"
+    exit 1
+fi
+
+# Create a local copy of the schema file if it's not in the working directory
+mkdir -p "$(dirname "{schema_local_path}")"
+cp "{schema_path}" "{schema_local_path}"
+
 singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
     python {self.slurm_config.script_path} \\
     --yaml_file {config_path} \\
-    --json_schema {self.slurm_config.schema_path}
+    --json_schema {schema_local_path}
 """
 
         script_path = script_dir / f"{job_name}.sh"
         with open(script_path, 'w') as f:
             f.write(script_content)
         
+        # Make the script executable
+        os.chmod(script_path, 0o755)
+        
         logger.info(f"Created job script at: {script_path}")
-        logger.info(f"Config path: {config_path}")
-        logger.info(f"Log directory: {log_dir}")
         
         return str(script_path)
 
@@ -187,8 +237,11 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
             logger.info(f"\n{f.read()}")
         
         try:
+            # Get the script directory to use as working directory
+            script_dir = str(Path(script_path).parent)
+            
             # Log the sbatch command
-            cmd = ["sbatch", script_path]
+            cmd = ["sbatch", "-D", script_dir, script_path]
             logger.info(f"Submitting SLURM job with command: {' '.join(cmd)}")
             
             # Run sbatch without check=True to handle the error ourselves
@@ -218,26 +271,23 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
                 else:
                     logger.warning(f"Could not get job details: {scontrol_result.stderr}")
             except Exception as e:
-                logger.warning(f"Failed to get job details: {e}")
+                logger.warning(f"Error getting job details: {e}")
             
             return job_id
             
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to submit SLURM job {job_name}")
-            logger.error(f"Command '{' '.join(e.cmd)}' failed with return code {e.returncode}")
+            logger.error(f"Command '{' '.join(cmd)}' failed with return code {e.returncode}")
             logger.error(f"stdout: {e.stdout}")
             logger.error(f"stderr: {e.stderr}")
             
-            # Try to get SLURM system status
+            # Log SLURM partition status for debugging
             try:
-                sinfo_cmd = ["sinfo"]
-                sinfo_result = subprocess.run(sinfo_cmd, capture_output=True, text=True)
-                if sinfo_result.returncode == 0:
-                    logger.info(f"Current SLURM partition status:\n{sinfo_result.stdout}")
-                else:
-                    logger.warning(f"Could not get SLURM status: {sinfo_result.stderr}")
-            except Exception as se:
-                logger.warning(f"Failed to get SLURM status: {se}")
+                sinfo_result = subprocess.run(["sinfo"], capture_output=True, text=True)
+                logger.info("Current SLURM partition status:")
+                logger.info(sinfo_result.stdout)
+            except Exception as e:
+                logger.warning(f"Could not get SLURM partition status: {e}")
             
             return None
 
@@ -384,81 +434,58 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
         return job_ids
 
     def submit_position_masking_jobs(self) -> List[int]:
-        """Submit jobs for position-based masking experiments"""
+        """Submit position masking jobs"""
         if not self.experiment_config.positions:
             raise ValueError("Positions must be provided for position-based masking")
         
         job_ids = []
         
-        # Create config
-        config = self.experiment_config.to_dict()
+        # Create masking config
+        masking_config = self.experiment_config.copy()
+        masking_config.jobname = f"{masking_config.jobname_prefix}_masked"
+        masking_config.parent_path = str(self.working_dir)
         
-        # Get positions based on strategy
-        if self.experiment_config.masking_strategy == MaskingStrategy.MASK_POSITIONS:
-            config["cols"] = self.experiment_config.positions
-            strategy_name = "masked"
-        else:  # UNMASK_POSITIONS
-            all_positions = set(range(1, len(self.experiment_config.sequence) + 1))
-            config["cols"] = list(all_positions - set(self.experiment_config.positions))
-            strategy_name = "unmasked"
-        
-        # Create config file
-        positions_str = "_".join(map(str, config["cols"]))
-        config_path = self.working_dir / "configs" / f"config_{strategy_name}_{positions_str}.yaml"
+        # Save masking config
+        config_path = self.config_dir / f"config_masked_{masking_config.jobname_prefix}.yaml"
         with open(config_path, 'w') as f:
-            yaml.dump(config, f)
+            yaml.dump(masking_config.to_dict(), f)
+        
+        logger.info(f"Created masking config at: {config_path}")
+        logger.info(f"Using model parameters from: {masking_config.get_setup_path() / 'params'}")
         
         # Submit job
-        job_id = self.submit_job(
-            str(config_path),
-            f"{self.experiment_config.jobname_prefix}_{strategy_name}"
-        )
-        
+        job_id = self.submit_job(str(config_path), masking_config.jobname)
         if job_id:
+            logger.info(f"Submitted masking job with ID {job_id}")
             job_ids.append(job_id)
         
         return job_ids
 
     def submit_control_job(self) -> Optional[int]:
-        """Submit control job (vanilla AF2)"""
+        """Submit control job"""
         if not self.experiment_config.run_control:
             return None
             
-        # Create config for control run
-        config = self.experiment_config.to_dict()
-        config["cols"] = []
+        # Create control config
+        control_config = self.experiment_config.copy()
+        control_config.jobname = f"{control_config.jobname_prefix}_vanilla_control"
         
-        # Get protein name from jobname prefix
-        protein_name = self.experiment_config.jobname_prefix.split("_")[0]
+        # Use the existing config path structure
+        config_path = Path(self.working_dir) / "configs" / "config_control.yaml"
         
-        # Create config file in the correct directory structure
-        # Use working_dir directly to avoid path duplication
-        base_dir = self.working_dir / "controls" / "vanilla"
-        base_dir.mkdir(parents=True, exist_ok=True)
-        
-        config_path = base_dir / "configs" / "config_control.yaml"
-        config_path.parent.mkdir(exist_ok=True)
-        
-        # Set parent path correctly
-        config["parentPath"] = str(base_dir)
-        
+        # Save control config
         with open(config_path, 'w') as f:
-            yaml.dump(config, f)
+            yaml.dump(control_config.to_dict(), f)
         
         logger.info(f"Created control config at: {config_path}")
+        logger.info(f"Using model parameters from: {control_config.get_setup_path() / 'params'}")
         
-        # Submit job with a descriptive name
-        job_id = self.submit_job(
-            str(config_path),
-            f"{protein_name}_vanilla_control"
-        )
-        
+        # Submit job
+        job_id = self.submit_job(str(config_path), control_config.jobname)
         if job_id:
             logger.info(f"Submitted control job with ID {job_id}")
-        else:
-            logger.error("Failed to submit control job")
-        
-        return job_id
+            return job_id
+        return None
 
     def submit_masking_jobs(self) -> List[int]:
         """Submit jobs based on masking strategy"""

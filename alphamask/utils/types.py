@@ -36,6 +36,26 @@ class ExperimentConfig:
     setup_base_path: Optional[str] = None
     callback_fn: Optional[Callable[[Any, Optional[str]], None]] = None
 
+    def copy(self) -> 'ExperimentConfig':
+        """Create a deep copy of the config."""
+        return ExperimentConfig(
+            sequence=self.sequence,
+            jobname_prefix=self.jobname_prefix,
+            parent_path=self.parent_path,
+            masking_strategy=self.masking_strategy,
+            positions=self.positions.copy() if self.positions else None,
+            num_recycles=self.num_recycles,
+            num_seeds=self.num_seeds,
+            msa_method=self.msa_method,
+            custom_a3m_path=self.custom_a3m_path,
+            mutations=self.mutations.copy() if self.mutations else None,
+            run_control=self.run_control,
+            run_only_control=self.run_only_control,
+            unified_memory=self.unified_memory,
+            setup_base_path=self.setup_base_path,
+            callback_fn=self.callback_fn
+        )
+
     def get_setup_path(self) -> Path:
         """Get the setup directory path for this experiment."""
         setup_base = Path(self.setup_base_path or os.path.expanduser("~/alphamask_setup"))

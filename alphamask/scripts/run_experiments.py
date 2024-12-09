@@ -98,6 +98,11 @@ def main():
     # Get base directory from config path
     base_dir = Path(args.config).parent.parent
     
+    # Resolve schema path
+    schema_path = Path(args.schema).resolve()
+    if not schema_path.exists():
+        raise FileNotFoundError(f"Schema file not found at {schema_path}")
+    
     # Set up logging
     setup_logging(base_dir / "logs")
     logger = logging.getLogger(__name__)
@@ -118,7 +123,7 @@ def main():
             email=args.email if not args.force_local else None,
             container_path=args.container,
             script_path=args.script,
-            schema_path=args.schema,
+            schema_path=str(schema_path),
             setup_base_path=args.setup_base_path
         )
         

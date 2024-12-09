@@ -22,6 +22,10 @@ class ProteinSystem:
     custom_a3m_path: str = ""
     parent_path: str = "/path/to/experiments"
 
+    def __post_init__(self):
+        """Initialize paths after dataclass initialization"""
+        self.parent_path = str(Path(self.parent_path).resolve())
+
 class Control:
     def __init__(
         self, 
@@ -36,7 +40,10 @@ class Control:
         self.protein = protein
         self.slurm_config = slurm_config
         self.mutations = mutations
-        self.working_dir = Path(protein.parent_path) / protein.name / "controls" / name
+        self.working_dir = Path(self.protein.parent_path).resolve() / self.protein.name / "controls" / name
+        self.config_dir = self.working_dir / "configs"
+        self.script_dir = self.working_dir / "scripts"
+        self.log_dir = self.working_dir / "logs"
 
     def _create_config(self) -> ExperimentConfig:
         return ExperimentConfig(
@@ -55,6 +62,9 @@ class Control:
     def run(self) -> bool:
         """Run control experiment"""
         self.working_dir.mkdir(parents=True, exist_ok=True)
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.script_dir.mkdir(parents=True, exist_ok=True)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
         
         config = self._create_config()
         job_manager = SlurmJobManager(
@@ -77,7 +87,7 @@ class Experiment:
         self.protein = protein
         self.slurm_config = slurm_config or SlurmJobConfig()
         self.controls: List[Control] = []
-        self.working_dir = Path(protein.parent_path) / protein.name / name
+        self.working_dir = Path(self.protein.parent_path) / self.protein.name / name
         self.working_dir.mkdir(parents=True, exist_ok=True)
 
     def validate(self):
