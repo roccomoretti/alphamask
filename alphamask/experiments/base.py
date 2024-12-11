@@ -49,7 +49,9 @@ class Control:
         return ExperimentConfig(
             sequence=self.protein.sequence,
             jobname_prefix=f"{self.protein.name}_{self.name}",
-            masking_strategy=MaskingStrategy.MASK_POSITIONS,
+            masking_mode="on",
+            masking_strategy=MaskingStrategy.ITERATIVE_SINGLE,
+            mask_msa=True,
             parent_path=str(self.working_dir),
             num_recycles=12,
             num_seeds=12,

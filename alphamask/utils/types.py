@@ -24,6 +24,10 @@ class ExperimentConfig:
     jobname_prefix: str
     parent_path: str
     masking_strategy: MaskingStrategy
+    masking_mode: str = "off"
+    mask_msa: bool = False
+    mask_deletion_matrix: bool = False
+    mask_identity: str = "X"
     positions: Optional[List[int]] = None
     num_recycles: int = 12
     num_seeds: int = 12
@@ -43,6 +47,10 @@ class ExperimentConfig:
             jobname_prefix=self.jobname_prefix,
             parent_path=self.parent_path,
             masking_strategy=self.masking_strategy,
+            masking_mode=self.masking_mode,
+            mask_msa=self.mask_msa,
+            mask_deletion_matrix=self.mask_deletion_matrix,
+            mask_identity=self.mask_identity,
             positions=self.positions.copy() if self.positions else None,
             num_recycles=self.num_recycles,
             num_seeds=self.num_seeds,

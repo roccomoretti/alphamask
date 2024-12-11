@@ -49,17 +49,17 @@ class SlurmJobConfig:
                 logger.warning(f"GPU type {self.gpu_type} not available on partition {self.partition}. Using rtx2080ti.")
                 self.gpu_type = "rtx2080ti"
         elif self.partition == "paula":
-            valid_gpus = ["a100"]
+            valid_gpus = ["a30"]
             if self.gpu_type not in valid_gpus:
-                logger.warning(f"GPU type {self.gpu_type} not available on partition {self.partition}. Using a100.")
-                self.gpu_type = "a100"
+                logger.warning(f"GPU type {self.gpu_type} not available on partition {self.partition}. Using a30.")
+                self.gpu_type = "a30"
 
     def get_gpu_constraint(self) -> str:
         """Get the correct GPU constraint string based on partition and GPU type"""
         if self.partition == "clara":
             return f"gpu:rtx2080ti:{self.gpu_count}"
         elif self.partition == "paula":
-            return f"gpu:a100:{self.gpu_count}"
+            return f"gpu:a30:{self.gpu_count}"
         return f"gpu:{self.gpu_type}:{self.gpu_count}"
 
 class SlurmJob:
@@ -152,13 +152,16 @@ class SlurmJobManager:
         script_dir.mkdir(parents=True, exist_ok=True)
         log_dir.mkdir(parents=True, exist_ok=True)
         
-        # Define local schema path
-        schema_local_path = Path(self.working_dir) / "config" / "schema_validation.json"
+        # Create local config directory and copy schema
+        config_dir = Path(self.working_dir) / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        local_schema_path = config_dir / "schema_validation.json"
+        shutil.copy(schema_path, local_schema_path)
         
         # Log the paths being used
         logger.info(f"Config path: {config_path}")
         logger.info(f"Schema path: {schema_path}")
-        logger.info(f"Schema local path: {schema_local_path}")
+        logger.info(f"Local schema path: {local_schema_path}")
         logger.info(f"Working directory: {self.working_dir}")
         logger.info(f"Script directory: {script_dir}")
         logger.info(f"Log directory: {log_dir}")
@@ -172,21 +175,32 @@ class SlurmJobManager:
 #SBATCH --cpus-per-task={self.slurm_config.cpus_per_task}
 #SBATCH --partition={self.slurm_config.partition}
 #SBATCH --gres={self.slurm_config.get_gpu_constraint()}
-"""
 
-        if self.slurm_config.email:
-            script_content += f"""#SBATCH --mail-user={self.slurm_config.email}
-#SBATCH --mail-type=FAIL,END
-"""
+# Load required modules - use module spider to find correct versions
+module purge
+module spider cuda
+module spider gcc
 
-        script_content += f"""
 # Print paths for debugging
 echo "Working directory: $(pwd)"
 echo "Config path: {config_path}"
 echo "Script path: {self.slurm_config.script_path}"
-echo "Schema path: {schema_path}"
+echo "Schema path: {local_schema_path}"
 
 cd {self.working_dir}
+
+# Debug commands to verify paths and permissions
+echo "Listing working directory contents:"
+ls -la
+echo "Listing input directory contents:"
+ls -la in/
+echo "Checking MSA file:"
+ls -la in/msa.a3m || echo "MSA file not found"
+echo "Checking parent directories:"
+ls -la ..
+echo "Current directory structure:"
+pwd
+find . -type f -name "msa.a3m"
 
 # Verify paths exist
 if [ ! -f "{config_path}" ]; then
@@ -194,19 +208,59 @@ if [ ! -f "{config_path}" ]; then
     exit 1
 fi
 
-if [ ! -f "{schema_path}" ]; then
-    echo "Error: Schema file not found at {schema_path}"
+if [ ! -f "{local_schema_path}" ]; then
+    echo "Error: Schema file not found at {local_schema_path}"
     exit 1
 fi
 
-# Create a local copy of the schema file if it's not in the working directory
-mkdir -p "$(dirname "{schema_local_path}")"
-cp "{schema_path}" "{schema_local_path}"
+# Function to wait for file to be fully written
+wait_for_file() {{
+    local file="$1"
+    local timeout=3600  # 1 hour timeout
+    local start_time=$(date +%s)
+    
+    while true; do
+        if [ -f "$file" ]; then
+            # Check if file size is stable (no writes for 5 seconds)
+            local size1=$(stat -c %s "$file")
+            sleep 5
+            local size2=$(stat -c %s "$file")
+            if [ "$size1" = "$size2" ]; then
+                return 0
+            fi
+        fi
+        
+        # Check timeout
+        local current_time=$(date +%s)
+        if [ $((current_time - start_time)) -gt $timeout ]; then
+            echo "Timeout waiting for $file to be fully written"
+            return 1
+        fi
+        
+        sleep 10
+    done
+}}
 
-singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
-    python {self.slurm_config.script_path} \\
-    --yaml_file {config_path} \\
-    --json_schema {schema_local_path}
+# If this is a masking job and using custom MSA, wait for the MSA file
+if [ "{self.experiment_config.msa_method}" = "custom_a3m" ]; then
+    echo "Waiting for MSA file to be fully written: {self.experiment_config.custom_a3m_path}"
+    if ! wait_for_file "{self.experiment_config.custom_a3m_path}"; then
+        echo "Error: Failed to get MSA file"
+        exit 1
+    fi
+    echo "MSA file is ready"
+fi
+
+# Print available modules for debugging
+module avail
+
+singularity exec --nv --cleanenv \
+    -B /work:/work \
+    -B $(pwd):$(pwd) \
+    {self.slurm_config.container_path} \
+    python {self.slurm_config.script_path} \
+    --yaml_file {config_path} \
+    --json_schema {local_schema_path}
 """
 
         script_path = script_dir / f"{job_name}.sh"
@@ -445,13 +499,23 @@ singularity exec --nv --cleanenv {self.slurm_config.container_path} \\
         masking_config.jobname = f"{masking_config.jobname_prefix}_masked"
         masking_config.parent_path = str(self.working_dir)
         
+        # Create necessary directories
+        msa_dir = Path(self.working_dir) / "in" / "msa"
+        pdb_dir = Path(self.working_dir) / "out" / "pdbs"
+        msa_dir.mkdir(parents=True, exist_ok=True)
+        pdb_dir.mkdir(parents=True, exist_ok=True)
+        
         # Save masking config
-        config_path = self.config_dir / f"config_masked_{masking_config.jobname_prefix}.yaml"
+        config_path = Path(self.working_dir) / "configs" / f"config_masked_{masking_config.jobname_prefix}.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        
         with open(config_path, 'w') as f:
             yaml.dump(masking_config.to_dict(), f)
         
         logger.info(f"Created masking config at: {config_path}")
         logger.info(f"Using model parameters from: {masking_config.get_setup_path() / 'params'}")
+        logger.info(f"Created MSA directory at: {msa_dir}")
+        logger.info(f"Created PDB directory at: {pdb_dir}")
         
         # Submit job
         job_id = self.submit_job(str(config_path), masking_config.jobname)

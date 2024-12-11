@@ -114,8 +114,8 @@ def main():
         
         # Configure SLURM/local settings
         slurm_config = SlurmJobConfig(
-            time="24:00:00",
-            memory="300000",
+            time="4:00:00",
+            memory="10000",
             cpus_per_task=1,
             gpu_type=args.gpu_type if not args.force_local else None,
             gpu_count=1,
@@ -156,7 +156,7 @@ def main():
         # logger.info("Starting RfaH experiments")
         # run_rfah_experiments(slurm_config, config, base_dir)
         
-        logger.info("All experiments completed successfully")
+        logger.info("All experiments submitted successfully")
         
     except Exception as e:
         logger.error(f"Error running experiments: {str(e)}", exc_info=True)
