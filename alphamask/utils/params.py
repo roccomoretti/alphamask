@@ -1,46 +1,31 @@
+import os
+from pathlib import Path
+import yaml
+
+def load_defaults() -> dict:
+    """Load default parameters from YAML file."""
+    defaults_path = Path(__file__).parent.parent / "config" / "defaults.yaml"
+    with open(defaults_path, 'r') as f:
+        return yaml.safe_load(f)
+
 def create_common_params(config):
     """Create common parameters for all runs."""
-    return {
+    # Load defaults
+    params = load_defaults()
+    
+    # Override with config values
+    overrides = {
         "sequence": config.sequence,
-        "chain": "A",
-        "copies": 1,
-        "cov": 75,
-        "setupPath": "/content/setup",
         "custom_a3m_path": config.custom_a3m_path,
-        "debug": True,
-        "do_not_align": False,
-        "do_not_filter": False,
-        "id": 90,
-        "mask_deletion_matrix": True,
-        "mask_identity": "X",
-        "mask_msa": True,
-        "masking_mode": "list",
-        "model": "all",
-        "model_type": "monomer (ptm)",
         "msa_method": config.msa_method,
-        "num_extra_msa": 1024,
-        "num_msa": 512,
         "num_recycles": config.num_recycles,
         "num_seeds": config.num_seeds,
-        "overwrite": False,
-        "pair_mode": "unpaired_paired",
-        "parentPath": config.parent_path,
-        "pdb": "",
-        "propagate_to_copies": True,
-        "qid": 0,
-        "rank_by": "auto",
-        "recycle_early_stop_tolerance": 0.0,
-        "rm_template_seq": False,
-        "seed": 0,
-        "select_best_across_recycles": False,
-        "show_images": False,
-        "template_mode": "none",
+        "parent_path": config.parent_path,
         "unified_memory": config.unified_memory,
-        "use_cluster_profile": True,
-        "use_dropout": False,
-        "use_initial_guess": False,
-        "use_mlm": False,
-        "cols_range": [],
-        "show_figures": True,
         "mutations": config.mutations if config.mutations else [],
     }
+    
+    # Update defaults with overrides
+    params.update(overrides)
+    
+    return params

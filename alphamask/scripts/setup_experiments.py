@@ -5,10 +5,10 @@ import sys
 import os
 from pathlib import Path
 
-def setup_experiment_directories(base_path: str, setup_base_path: str, force: bool = False):
+def setup_experiment_directories(base_path: str, setup_path: str, force: bool = False):
     """Set up experiment directory structure"""
     base_dir = Path(base_path).resolve()
-    setup_base = Path(setup_base_path).resolve()
+    setup_base = Path(setup_path).resolve()
     
     # Check if directory already contains experiment files
     if base_dir.exists() and not force:
@@ -22,6 +22,7 @@ def setup_experiment_directories(base_path: str, setup_base_path: str, force: bo
     dirs = [
         "config",
         "logs",
+        "schema",
         #"results/her2",
         #"results/rfah",
         #"results/i89",
@@ -52,7 +53,7 @@ def setup_experiment_directories(base_path: str, setup_base_path: str, force: bo
     
     config_files = {
         "test.yaml": "config/test.yaml",
-        "schema_validation.json": "config/schema_validation.json"
+        "schema_validation.json": "schema/schema_validation.json"
     }
     
     for src_file, dst_path in config_files.items():
@@ -76,7 +77,7 @@ def main():
         help="Base path for experiment setup"
     )
     parser.add_argument(
-        "--setup-base-path",
+        "--setup-path",
         type=str,
         default=os.path.expanduser("~/alphamask_setup"),
         help="Base path for setup files (default: ~/alphamask_setup)"
@@ -90,7 +91,7 @@ def main():
     args = parser.parse_args()
     
     try:
-        setup_experiment_directories(args.path, args.setup_base_path, args.force)
+        setup_experiment_directories(args.path, args.setup_path, args.force)
         print("\nExperiment directories setup complete!")
         print("\nNext steps:")
         print("1. Review and modify config/proteins.yaml as needed")

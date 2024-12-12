@@ -5,7 +5,11 @@ import yaml
 
 from .base import ProteinSystem
 from .masking import IterativeMaskingExperiment, AprioriMaskingExperiment
-from .mutations import MutationExperiment, DoubleMutationExperiment
+from .mutations import (
+    MutationExperiment, 
+    DoubleMutationExperiment,
+    I89SMutationMaskingExperiment
+)
 from .frustra import FrustraMaskingExperiment
 from ..utils.slurm import SlurmJobConfig
 
@@ -104,7 +108,8 @@ def run_i89_experiments(slurm_config: Optional[SlurmJobConfig] = None, config: O
     experiments = [
         IterativeMaskingExperiment(i89, slurm_config),
         AprioriMaskingExperiment(i89, slurm_config),
-        FrustraMaskingExperiment(i89, slurm_config)
+        FrustraMaskingExperiment(i89, slurm_config),
+        I89SMutationMaskingExperiment(i89, slurm_config)
     ]
     
     for experiment in experiments:

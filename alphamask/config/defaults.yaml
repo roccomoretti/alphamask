@@ -1,0 +1,68 @@
+# Default configuration values for AlphaMask
+
+# Basic parameters
+sequence: ""  # Required, no default
+jobname_prefix: ""   # Required, no default (changed from jobname)
+chain: "A"
+copies: 1
+debug: false
+
+# MSA parameters
+msa_method: "mmseqs2"  # Changed default to mmseqs2
+custom_a3m_path: ""
+pair_mode: "unpaired_paired"
+cov: 75
+id: 90
+qid: 0
+do_not_filter: false
+do_not_align: false
+
+# Template parameters
+template_mode: "none"
+pdb: ""
+rm_template_seq: false
+propagate_to_copies: true
+
+# Model parameters
+model_type: "monomer (ptm)"
+rank_by: "auto"
+use_initial_guess: false
+num_msa: 512
+num_extra_msa: 1024
+use_cluster_profile: true
+model: "all"
+num_recycles: 2
+num_seeds: 2
+recycle_early_stop_tolerance: 0.0
+select_best_across_recycles: false
+use_mlm: false
+use_dropout: false
+seed: 0
+
+# Masking parameters
+masking_mode: "off"
+mask_msa: false
+mask_deletion_matrix: false
+cols: []
+cols_range: []
+mask_identity: "X"
+masking_strategy: "iterative_single"  # Must match MaskingStrategy enum values
+
+# Pipeline parameters
+pipeline_type: "default"  # One of: default, masking, mutate, mutate_and_mask
+mutations: []  # List of mutations in format ["A123B", ...]
+positions: []  # List of positions to mask
+
+# Path parameters
+parent_path: ""  # Required, no default
+setup_path: ""  # Required, no default
+
+# Display parameters
+show_images: false
+show_figures: true
+overwrite: true
+
+# Experiment control parameters
+run_control: true
+run_only_control: false
+unified_memory: false 

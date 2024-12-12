@@ -638,8 +638,8 @@ for res_num, data in most_frustrated_mutations.items():
     params = {
         "sequence": sequence,
         "jobname": f"{jobname_prefix}_mut_{mutation_str}",
-        "parentPath": parent_path,
-        "setupPath": "/content/setup",
+        "parent_path": parent_path,
+        "setup_path": "/content/setup",
         "masking_mode": "list",
         "mask_msa": True,
         "mask_deletion_matrix": True,

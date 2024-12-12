@@ -87,6 +87,13 @@ def main():
         # Load and validate configuration
         config_path = args.config if args.config else args.yaml_file
         config = load_config(config_path)
+        
+        # Set parent_path to working directory if not specified
+        if not config.get('parent_path'):
+            config_file_dir = Path(config_path).parent
+            config['parent_path'] = str(config_file_dir)
+            logger.info(f"Setting parent_path to config file directory: {config['parent_path']}")
+            
         validate_config(config, args.schema)
         
         # Select pipeline based on argument
@@ -104,7 +111,7 @@ def main():
         pipeline = PipelineClass(params=config)
         result = pipeline.run()
         
-        logger.info(f"Prediction completed successfully: {result}")
+        logger.info(f"Prediction completed successfully")
         return result
         
     except Exception as e:

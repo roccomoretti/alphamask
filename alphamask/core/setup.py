@@ -10,8 +10,8 @@ class SetupAlphaFoldColabDesign:
     
     Attributes:
         unified_memory (bool): Whether to use unified memory
-        parentPath (str): Path to parent directory
-        setupPath (str): Path to setup directory
+        parent_path (str): Path to parent directory
+        setup_path (str): Path to setup directory
         python_colab (str): Path to Python interpreter
         colabdesign_path (str): Path to ColabDesign installation
         ENV (Dict[str, str]): Environment variables
@@ -20,14 +20,14 @@ class SetupAlphaFoldColabDesign:
     def __init__(
         self,
         unified_memory: bool,
-        parentPath: str,
-        setupPath: str,
+        parent_path: str,
+        setup_path: str,
         python_colab: str = "/usr/bin/python3.10",
         colabdesign_path: str = "/usr/local/lib/python3.10/dist-packages/colabdesign",
     ):
         self.unified_memory = unified_memory
-        self.parentPath = Path(parentPath)
-        self.setupPath = Path(setupPath)
+        self.parent_path = Path(parent_path)
+        self.setup_path = Path(setup_path)
         self.python_colab = python_colab
         self.colabdesign_path = colabdesign_path
         self.ENV = (
@@ -49,17 +49,17 @@ class SetupAlphaFoldColabDesign:
 
     def _create_directories(self) -> None:
         """Create necessary directories."""
-        self.setupPath.mkdir(exist_ok=True)
+        self.setup_path.mkdir(exist_ok=True)
 
     def _check_and_install_components(self) -> None:
         """Check and install required components."""
-        if (self.setupPath / "params").is_dir():
+        if (self.setup_path / "params").is_dir():
             print("Setup path is present.")
         else:
             print("Setup path is not present. Installing ColabDesign...")
             self.install_colab_design()
 
-        if (self.setupPath / "hhsuite").is_dir():
+        if (self.setup_path / "hhsuite").is_dir():
             print("HHsuite is present.")
         else:
             print("HHsuite is not present. Installing HHsuite...")
@@ -78,7 +78,7 @@ class SetupAlphaFoldColabDesign:
 
             return output
 
-        params_path = self.setupPath / "params"
+        params_path = self.setup_path / "params"
         params_path.mkdir(exist_ok=True)
         print(f"Created params directory at {params_path}")
 
@@ -86,8 +86,8 @@ class SetupAlphaFoldColabDesign:
 
         commands = [
             f"apt-get install aria2 -qq",
-            f"cd {self.setupPath} && aria2c -q -x 16 https://storage.googleapis.com/alphafold/alphafold_params_2022-12-06.tar",
-            f"tar -xf {self.setupPath}/alphafold_params_2022-12-06.tar -C {params_path}",
+            f"cd {self.setup_path} && aria2c -q -x 16 https://storage.googleapis.com/alphafold/alphafold_params_2022-12-06.tar",
+            f"tar -xf {self.setup_path}/alphafold_params_2022-12-06.tar -C {params_path}",
             f"touch {params_path/'done.txt'}",
         ]
 
@@ -99,15 +99,15 @@ class SetupAlphaFoldColabDesign:
             f"{self.python_colab} -m pip -q install git+https://github.com/sokrypton/ColabDesign.git@gamma"
         )
         run_command(
-            f"ln -s {self.colabdesign_path} {self.setupPath/'colabdesign'}"
+            f"ln -s {self.colabdesign_path} {self.setup_path/'colabdesign'}"
         )
         run_command(
-            f"wget https://raw.githubusercontent.com/sokrypton/ColabFold/main/colabfold/colabfold.py -O {self.setupPath/'colabfold_utils.py'}"
+            f"wget https://raw.githubusercontent.com/sokrypton/ColabFold/main/colabfold/colabfold.py -O {self.setup_path/'colabfold_utils.py'}"
         )
 
     def install_hhsuite(self) -> None:
         """Install HHsuite."""
-        hhsuite_path = self.setupPath / "hhsuite"
+        hhsuite_path = self.setup_path / "hhsuite"
         hhsuite_path.mkdir(exist_ok=True)
         
         os.system(
@@ -123,8 +123,8 @@ class ColabDesignUtils:
     Utility functions for ColabDesign.
     """
     
-    def __init__(self, setupPath: str):
-        self.setupPath = Path(setupPath)
+    def __init__(self, setup_path: str):
+        self.setup_path = Path(setup_path)
 
     def run_hhalign(
         self, 
@@ -183,8 +183,8 @@ class ColabDesignUtils:
 
         if shutil.which('hhfilter') is None:
             print("hhfilter not found in PATH. Adding it now.")
-            hhsuite_bin = self.setupPath / 'hhsuite/bin'
-            hhsuite_scripts = self.setupPath / 'hhsuite/scripts'
+            hhsuite_bin = self.setup_path / 'hhsuite/bin'
+            hhsuite_scripts = self.setup_path / 'hhsuite/scripts'
             os.environ["PATH"] = f"{os.environ['PATH']}:{hhsuite_bin}:{hhsuite_scripts}"
             print(f"Updated PATH: {os.environ['PATH']}")
             print(f"hhfilter location after update: {shutil.which('hhfilter')}")

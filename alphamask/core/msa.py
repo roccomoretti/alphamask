@@ -4,7 +4,7 @@ import sys
 import shutil
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Union
 from pathlib import Path
 from IPython import get_ipython
 import subprocess
@@ -12,6 +12,7 @@ import tempfile
 import gc
 import jax
 import jax.numpy as jnp
+import logging
 
 from colabdesign.af.contrib import predict
 
@@ -44,8 +45,8 @@ class PrepInputs:
         rm_template_seq (bool): Whether to remove template sequence
         propagate_to_copies (bool): Whether to propagate to copies
         do_not_align (bool): Whether to skip alignment
-        setupPath (Path): Path to setup directory
-        parentPath (Path): Path to parent directory
+        setup_path (Path): Path to setup directory
+        parent_path (Path): Path to parent directory
         overwrite (bool): Whether to overwrite existing files
         show_figures (bool): Whether to show figures
     """
@@ -54,30 +55,63 @@ class PrepInputs:
         self,
         sequence: str,
         jobname: str,
-        copies: int,
-        msa_method: str,
-        custom_a3m_path: str,
-        pair_mode: str,
-        cov: int,
-        id: int,
-        qid: int,
-        do_not_filter: bool,
-        template_mode: str,
-        pdb: str,
-        chain: str,
-        rm_template_seq: bool,
-        propagate_to_copies: bool,
-        do_not_align: bool,
-        setupPath: str,
-        parentPath: str,
-        overwrite: bool,
-        show_figures: bool,
+        copies: int = 1,
+        msa_method: str = "mmseqs2",
+        custom_a3m_path: Union[str, Path] = "",
+        pair_mode: str = "unpaired",
+        cov: int = 0,
+        id: int = 90,
+        qid: int = 0,
+        do_not_filter: bool = False,
+        template_mode: str = "none",
+        pdb: str = "",
+        chain: str = "",
+        rm_template_seq: bool = False,
+        propagate_to_copies: bool = False,
+        do_not_align: bool = False,
+        setup_path: Optional[Union[str, Path]] = None,
+        parent_path: Optional[Union[str, Path]] = None,
+        overwrite: bool = False,
+        show_figures: bool = True,
     ):
+        """Initialize PrepInputs."""
+        self.logger = logging.getLogger(__name__)
+        
+        # Validate required parameters
+        if not sequence:
+            raise ValueError("sequence must not be empty")
+            
+        # Handle jobname - allow empty jobname, will be set in process_sequence
+        self.jobname = str(jobname) if jobname else ""
+        self.logger.info(f"Initializing PrepInputs with jobname: {self.jobname}")
+        
+        # Validate and convert paths
+        if not setup_path:
+            raise ValueError("setup_path must be provided")
+        if not parent_path:
+            raise ValueError("parent_path must be provided")
+            
+        # Convert paths to Path objects and ensure they exist
+        self.setup_path = Path(setup_path)
+        self.parent_path = Path(parent_path)
+        
+        if not self.setup_path.exists():
+            raise FileNotFoundError(f"setup_path does not exist: {self.setup_path}")
+        if not self.parent_path.exists():
+            self.logger.info(f"Creating parent directory: {self.parent_path}")
+            self.parent_path.mkdir(parents=True, exist_ok=True)
+            
+        # Handle custom_a3m_path
+        self.custom_a3m_path = Path(custom_a3m_path) if custom_a3m_path else None
+        
+        self.logger.debug(f"Using setup_path: {self.setup_path} (type: {type(self.setup_path)})")
+        self.logger.debug(f"Using parent_path: {self.parent_path} (type: {type(self.parent_path)})")
+        self.logger.debug(f"Using custom_a3m_path: {self.custom_a3m_path} (type: {type(self.custom_a3m_path)})")
+        
+        # Store other parameters
         self.sequence = sequence
-        self.jobname = jobname
         self.copies = copies
         self.msa_method = msa_method
-        self.custom_a3m_path = Path(custom_a3m_path) if custom_a3m_path else None
         self.pair_mode = pair_mode
         self.cov = cov
         self.id = id
@@ -89,58 +123,27 @@ class PrepInputs:
         self.rm_template_seq = rm_template_seq
         self.propagate_to_copies = propagate_to_copies
         self.do_not_align = do_not_align
-        self.setupPath = Path(setupPath)
-        self.parentPath = Path(parentPath)
         self.overwrite = overwrite
         self.show_figures = show_figures
         
-        # Initialize attributes that will be set later
-        self.u_sequences: List[str] = []
-        self.u_cyclic: List[bool] = []
-        self.u_sub_lengths: List[List[int]] = []
-        self.u_lengths: List[int] = []
-        self.sub_seq: str = ""
-        self.input_opts: Dict = {}
-        self.msa: np.ndarray = None
-        self.deletion_matrix: np.ndarray = None
-        self.Ls: List[int] = []
-        self.has_templates: bool = False
-        self.batches: List = []
+        # Initialize other attributes
+        self.input_opts = {}
+        self.msa = None
+        self.deletion_matrix = None
+        self.has_templates = False
+        self.u_lengths = None
+        self.u_sub_lengths = None
+        self.u_cyclic = None
+        self.Ls = None
+        self.batches = None
         
-        # Check for required dependencies
-        try:
-            import requests
-        except ImportError:
-            raise ImportError("Please install requests: pip install requests")
-            
-        # Verify setupPath contains required files
-        colabfold_utils = self.setupPath / "colabfold_utils.py"
-        if not colabfold_utils.exists():
-            print("WARNING: colabfold_utils.py not found, downloading from ColabFold...")
-            import urllib.request
-            url = "https://raw.githubusercontent.com/sokrypton/ColabFold/main/colabfold/colabfold.py"
-            urllib.request.urlretrieve(url, str(colabfold_utils))
-
-        # Initialize colab-specific attributes
-        self.is_colab = is_colab_environment()
-        if self.is_colab:
-            from google.colab import files
-            self.colab_files = files
-            
-    def filter_options(self) -> None:
-        """Filter and validate input options."""
-        self.sequence = self.sequence.upper()
-        self.sequence = re.sub("[^A-Z:/()]", "", self.sequence)
-        self.sequence = re.sub("\(", ":(", self.sequence)
-        self.sequence = re.sub("\)", "):", self.sequence)
-        self.sequence = re.sub(":+", ":", self.sequence)
-        self.sequence = re.sub("/+", "/", self.sequence)
-        self.sequence = re.sub("^[:/]+", "", self.sequence)
-        self.sequence = re.sub("[:/]+$", "", self.sequence)
-        self.jobname = re.sub(r"\W+", "", self.jobname)
+        self.logger.debug(f"PrepInputs initialized with jobname: {self.jobname}")
 
     def process_sequence(self) -> None:
         """Process input sequence and set up job parameters."""
+        self.logger.info("Processing sequence and setting up job parameters")
+        
+        # Process sequences
         sequences = self.sequence.split(":")
         self.u_sequences = predict.get_unique_sequences(sequences)
         self.u_cyclic = [x.startswith("(") for x in self.u_sequences]
@@ -151,18 +154,37 @@ class PrepInputs:
         ]
         
         if len(sequences) > len(self.u_sequences):
-            print("WARNING: use copies to define homooligomers")
+            self.logger.warning("Use copies to define homooligomers")
             
         self.u_lengths = [len(x) for x in self.u_sequences]
         self.sub_seq = "".join(self.u_sequences)
         seq = self.sub_seq * self.copies
 
-        self.jobname = f"{self.jobname}_{predict.get_hash(seq)[:5]}"
+        # Generate jobname if not provided or append hash
+        seq_hash = predict.get_hash(seq)[:5]
+        if not self.jobname:
+            self.jobname = f"job_{seq_hash}"
+            self.logger.info(f"Generated jobname: {self.jobname}")
+        else:
+            # Format jobname to include hash if not already present
+            if not self.jobname.endswith(seq_hash):
+                # If jobname already has a hash, replace it
+                if '_' in self.jobname and len(self.jobname.split('_')[-1]) == 5:
+                    base_jobname = '_'.join(self.jobname.split('_')[:-1])
+                    self.jobname = f"{base_jobname}_{seq_hash}"
+                else:
+                    self.jobname = f"{self.jobname}_{seq_hash}"
+            self.logger.info(f"Using jobname with hash: {self.jobname}")
+            
+        # Create job directories after jobname is finalized
+        self._create_directories()
+        
+        # Handle existing job
         self._handle_existing_job()
         
-        print("jobname", self.jobname)
-        print(f"length={self.u_lengths} copies={self.copies}")
+        self.logger.info(f"Sequence processing complete. Length={self.u_lengths} copies={self.copies}")
 
+        # Set input options
         self.input_opts = {
             "sequence": self.u_sequences,
             "copies": self.copies,
@@ -174,12 +196,31 @@ class PrepInputs:
             "template_mode": self.template_mode,
             "propagate_to_copies": self.propagate_to_copies,
         }
-        print(self.input_opts)
+        self.logger.debug(f"Input options set: {self.input_opts}")
 
+    def filter_options(self) -> None:
+        """Filter and validate input options."""
+        self.logger.debug(f"Filtering options for jobname: {self.jobname}")
+        self.sequence = self.sequence.upper()
+        self.sequence = re.sub("[^A-Z:/()]", "", self.sequence)
+        self.sequence = re.sub("\(", ":(", self.sequence)
+        self.sequence = re.sub("\)", "):", self.sequence)
+        self.sequence = re.sub(":+", ":", self.sequence)
+        self.sequence = re.sub("/+", "/", self.sequence)
+        self.sequence = re.sub("^[:/]+", "", self.sequence)
+        self.sequence = re.sub("[:/]+$", "", self.sequence)
+        self.jobname = re.sub(r"\W+", "", self.jobname)
+        self.logger.debug(f"Filtered options: sequence={self.sequence}, jobname={self.jobname}")
     def _handle_existing_job(self) -> None:
         """Handle cases where job directory already exists."""
+        self.logger.info("Checking for existing job directory")
+        
         def check(folder: str) -> bool:
-            return (self.parentPath / folder).exists()
+            """Check if a folder exists in the parent path."""
+            if not self.parent_path:
+                raise ValueError("parent_path not initialized")
+            job_path = self.parent_path / folder
+            return job_path.exists()
 
         if check(self.jobname):
             n = 0
@@ -187,14 +228,17 @@ class PrepInputs:
                 n += 1
                 
             if self.overwrite:
-                print(
-                    f"WARNING: {self.jobname} already exists. Using the same jobname. "
+                self.logger.warning(
+                    f"{self.jobname} already exists. Using the same jobname. "
                     "If you want to run the job with a different jobname, set overwrite to False. "
                     "If you did not change other parameters your files will be overwritten."
                 )
             else:
-                print(f"WARNING: {self.jobname} already exists. Changing jobname to {self.jobname}_{n}")
-                self.jobname = f"{self.jobname}_{n}"
+                new_jobname = f"{self.jobname}_{n}"
+                self.logger.warning(f"{self.jobname} already exists. Changing jobname to {new_jobname}")
+                self.jobname = new_jobname
+                # Create directories for the new jobname
+                self._create_directories()
 
     def get_msa(self) -> None:
         """Get Multiple Sequence Alignment."""
@@ -202,8 +246,8 @@ class PrepInputs:
             kwargs["user_agent"] = "colabdesign/gamma"
             return run_mmseqs2(*args, **kwargs)
 
-        os.makedirs(self.parentPath / self.jobname, exist_ok=True)
-        input_path = self.parentPath / self.jobname / "in"
+        os.makedirs(self.parent_path / self.jobname, exist_ok=True)
+        input_path = self.parent_path / self.jobname / "in"
         input_path.mkdir(exist_ok=True)
         
         self.Ls = [len(x) for x in self.u_sequences]
@@ -212,17 +256,19 @@ class PrepInputs:
             self._handle_mmseqs2_msa(input_path, run_mmseqs2_wrapper)
         elif self.msa_method == "single_sequence":
             self._handle_single_sequence_msa()
-        else:
+        elif self.msa_method.startswith("custom_"):
             self._handle_custom_msa()
+        else:
+            raise ValueError(f"Unknown MSA method: {self.msa_method}")
 
-        if len(self.msa) > 1:
+        if len(self.msa) > 1 and self.show_figures:
             predict.plot_msa(self.msa, self.Ls)
             plt.savefig(
                 input_path / "msa_feats.png",
                 dpi=200,
                 bbox_inches="tight",
             )
-            if "ipykernel" in sys.modules and self.show_figures:
+            if "ipykernel" in sys.modules:
                 plt.show()
             else:
                 plt.close()
@@ -239,7 +285,7 @@ class PrepInputs:
             from alphamask.utils.colabfold_utils import run_mmseqs2
             from alphamask.core.setup import ColabDesignUtils
             
-            utils = ColabDesignUtils(self.setupPath)
+            utils = ColabDesignUtils(self.setup_path)
             
             self.msa, self.deletion_matrix = predict.get_msa(
                 self.u_sequences,
@@ -256,7 +302,7 @@ class PrepInputs:
 
     def _handle_single_sequence_msa(self) -> None:
         """Handle single sequence MSA generation."""
-        msa_file = self.parentPath / self.jobname / "in/msa.a3m"
+        msa_file = self.parent_path / self.jobname / "in/msa.a3m"
         with open(msa_file, "w") as a3m:
             a3m.write(f">{self.jobname}\n{self.sub_seq}\n")
         self.msa, self.deletion_matrix = predict.parse_a3m(msa_file)
@@ -264,84 +310,97 @@ class PrepInputs:
     def _handle_custom_msa(self) -> None:
         """Handle custom MSA file processing."""
         msa_format = self.msa_method.split("_")[1]
-        print(f"MSA mode: {self.msa_method}")
+        self.logger.info(f"MSA mode: {self.msa_method}")
         
-        print(f"google_colab: {self.is_colab}")
-        print(f"local_run: {not self.is_colab}")
-
-        if self.is_colab and not self.custom_a3m_path:
-            print("WARNING: uploading MSA file via google colab api")
-            msa_dict = self.colab_files.upload()
-            lines = []
-            for k, v in msa_dict.items():
-                lines += v.decode().splitlines()
-            self.custom_a3m_path = k
-        
-        self._process_custom_msa(msa_format)
-
-    def _process_custom_msa(self, msa_format: str) -> None:
-        """Process custom MSA file."""
-        if not self.custom_a3m_path.exists():
-            raise ValueError(f"Invalid path: {self.custom_a3m_path}. File does not exist.")
+        if not self.custom_a3m_path:
+            raise ValueError("custom_a3m_path must be provided for custom MSA mode")
             
+        if not isinstance(self.custom_a3m_path, Path):
+            self.custom_a3m_path = Path(self.custom_a3m_path)
+            
+        if not self.custom_a3m_path.exists():
+            raise FileNotFoundError(f"MSA file not found: {self.custom_a3m_path}")
+            
+        # Read and process MSA file
         with open(self.custom_a3m_path, "r") as file:
             lines = [line.replace("\x00", "") for line in file.readlines()]
             input_lines = [line for line in lines if line.strip() and not line.startswith("#")]
-
-        input_path = self.parentPath / self.jobname / "in"
+            
+        # Create input directory and write MSA file
+        input_path = self.parent_path / self.jobname / "in"
+        input_path.mkdir(exist_ok=True, parents=True)
+        
         msa_file = input_path / f"msa.{msa_format}"
         
         if not msa_file.exists():
             with open(msa_file, "w") as msa:
                 msa.write("\n".join(input_lines))
-
+                
         if msa_format != "a3m":
+            if "hhsuite" not in os.environ["PATH"]:
+                os.environ["PATH"] += f":{self.setup_path/'hhsuite/bin'}:{self.setup_path/'hhsuite/scripts'}"
             os.system(
                 f"perl hhsuite/scripts/reformat.pl {msa_format} a3m {msa_file} {input_path/'msa.a3m'}"
             )
-
+            
         self._filter_msa(input_path)
 
     def _filter_msa(self, input_path: Path) -> None:
         """Filter MSA based on parameters."""
+        self.logger.info("Filtering MSA")
+        
+        # Ensure hhsuite is in PATH
         if "hhsuite" not in os.environ["PATH"]:
-            os.environ["PATH"] += f":{self.setupPath/'hhsuite/bin'}:{self.setupPath/'hhsuite/scripts'}"
+            os.environ["PATH"] += f":{self.setup_path/'hhsuite/bin'}:{self.setup_path/'hhsuite/scripts'}"
+            
+        # Check if hhfilter is available
+        try:
+            subprocess.run(["hhfilter", "-h"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except FileNotFoundError:
+            raise RuntimeError("hhfilter command not found. Make sure hhsuite is properly installed.")
 
         filt_file = input_path / "msa.filt.a3m"
         if not filt_file.exists():
             if self.do_not_filter:
-                print("WARNING: not filtering MSA. Using 0 cov, 0 qid and 100 id")
-                os.system(
-                    f"hhfilter -qid 0 -id 100 -cov 0 -i {input_path/'msa.a3m'} -o {filt_file}"
-                )
+                self.logger.warning("Not filtering MSA. Using 0 cov, 0 qid and 100 id")
+                command = [
+                    "hhfilter",
+                    "-qid", "0",
+                    "-id", "100",
+                    "-cov", "0",
+                    "-i", str(input_path/"msa.a3m"),
+                    "-o", str(filt_file)
+                ]
             else:
-                print(f"Filtering MSA with HHFilter. Using {self.cov} cov, {self.qid} qid and {self.id} id")
-                try:
-                    command = [
-                        "hhfilter",
-                        "-qid", str(self.qid),
-                        "-id", str(self.id),
-                        "-cov", str(self.cov),
-                        "-i", str(input_path/"msa.a3m"),
-                        "-o", str(filt_file)
-                    ]
-                    result = subprocess.run(
-                        command,
-                        check=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True
-                    )
-                    print(f"Running command: {' '.join(command)}")
-                    print("hhfilter ran successfully:")
-                    print(result.stdout)
-                except subprocess.CalledProcessError as e:
-                    print(f"Error running hhfilter: {e}")
-                    print(f"hhfilter stderr output:\n{e.stderr}")
-                except FileNotFoundError:
-                    print("hhfilter command not found. Make sure it's installed and in your PATH.")
+                self.logger.info(f"Filtering MSA with HHFilter. Using {self.cov} cov, {self.qid} qid and {self.id} id")
+                command = [
+                    "hhfilter",
+                    "-qid", str(self.qid),
+                    "-id", str(self.id),
+                    "-cov", str(self.cov),
+                    "-i", str(input_path/"msa.a3m"),
+                    "-o", str(filt_file)
+                ]
+                
+            self.logger.debug(f"Running command: {' '.join(command)}")
+            try:
+                result = subprocess.run(
+                    command,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                self.logger.debug("hhfilter output:")
+                self.logger.debug(result.stdout)
+            except subprocess.CalledProcessError as e:
+                self.logger.error(f"Error running hhfilter: {e}")
+                self.logger.error(f"hhfilter stderr output:\n{e.stderr}")
+                raise RuntimeError(f"hhfilter failed: {e.stderr}")
 
-        self.msa, self.deletion_matrix = predict.parse_a3m(filt_file) 
+        # Parse filtered MSA
+        self.msa, self.deletion_matrix = predict.parse_a3m(filt_file)
+        self.logger.info(f"Filtered MSA has {len(self.msa)} sequences")
 
     def use_templates(self):
         """Process and set up templates if needed."""
@@ -349,7 +408,7 @@ class PrepInputs:
         
         if self.has_templates:
             print("aligning template")
-            template_msa = f"{self.parentPath}/{self.jobname}/in/msa.a3m"
+            template_msa = f"{self.parent_path}/{self.jobname}/in/msa.a3m"
             if self.template_mode == "mmseqs2":
                 # Import here to avoid circular imports
                 from alphamask.utils.colabfold_utils import run_mmseqs2
@@ -361,9 +420,9 @@ class PrepInputs:
                     mmseqs2_fn=lambda *x: run_mmseqs2(*x, user_agent="colabdesign/gamma"),
                     do_not_filter=True,
                     do_not_return=True,
-                    output_a3m=f"{self.parentPath}/{self.jobname}/in/msa_tmp.a3m",
+                    output_a3m=f"{self.parent_path}/{self.jobname}/in/msa_tmp.a3m",
                 )
-                template_msa = f"{self.parentPath}/{self.jobname}/in/msa_tmp.a3m"
+                template_msa = f"{self.parent_path}/{self.jobname}/in/msa_tmp.a3m"
                 if not self.propagate_to_copies and self.copies > 1:
                     new_msa = []
                     with open(template_msa, "r") as handle:
@@ -376,7 +435,7 @@ class PrepInputs:
 
                 templates = {}
                 print("ID\tpdb\tcid\tevalue")
-                for line in open(f"{self.parentPath}/{self.jobname}/in/msa/_env/pdb70.m8", "r"):
+                for line in open(f"{self.parent_path}/{self.jobname}/in/msa/_env/pdb70.m8", "r"):
                     p = line.rstrip().split()
                     M, target_id, qid, e_value = p[0], p[1], p[2], p[10]
                     M = int(M)
@@ -453,7 +512,7 @@ class PrepInputs:
                 for pdb, chain in zip(pdbs, chains):
                     query_seq = "".join(self.u_sequences)
                     if "hhsuite" not in os.environ["PATH"]:
-                        os.environ["PATH"] += f":{self.setupPath/'hhsuite/bin'}:{self.setupPath/'hhsuite/scripts'}"
+                        os.environ["PATH"] += f":{self.setup_path/'hhsuite/bin'}:{self.setup_path/'hhsuite/scripts'}"
                     
                     import shutil
                     assert shutil.which("hhalign") is not None, "hhalign not found. Something may have failed during the setup step."
@@ -481,7 +540,7 @@ class PrepInputs:
                     plt.imshow(dgram, extent=(0, Ln, Ln, 0))
                     predict.plot_ticks(self.Ls * self.copies)
                 plt.savefig(
-                    f"{self.parentPath}/{self.jobname}/in/template_feats.png",
+                    f"{self.parent_path}/{self.jobname}/in/template_feats.png",
                     dpi=200,
                     bbox_inches="tight",
                 )
@@ -493,6 +552,21 @@ class PrepInputs:
             self.batches = [None]
 
         print("GC", gc.collect())
+
+    def _create_directories(self):
+        """Create necessary directories for the job."""
+        job_dir = self.parent_path / self.jobname
+        input_dir = job_dir / "in"
+        output_dir = job_dir / "out"
+        pdb_dir = output_dir / "pdbs"
+        pkl_dir = output_dir / "pkl"
+        
+        self.logger.info(f"Creating job directories at {job_dir}")
+        
+        # Create all required directories
+        for directory in [job_dir, input_dir, output_dir, pdb_dir, pkl_dir]:
+            directory.mkdir(parents=True, exist_ok=True)
+            self.logger.debug(f"Created directory: {directory}")
 
 class MSAUtils:
     """
@@ -806,7 +880,6 @@ class MSAUtils:
             coupling_scores = jnp.sqrt(
                 jnp.square(reshaped_correlations[:, :20, :, :20]).sum((1, 3))
             )
-            
             # Zero out diagonal (self-contacts)
             positions = jnp.arange(sequence_length)
             coupling_scores = coupling_scores.at[positions, positions].set(0)

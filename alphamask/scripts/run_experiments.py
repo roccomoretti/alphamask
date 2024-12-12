@@ -87,7 +87,7 @@ def main():
         help="Force local execution (don't use SLURM even if available)"
     )
     parser.add_argument(
-        "--setup-base-path",
+        "--setup-path",
         type=str,
         default=os.path.expanduser("~/alphamask_setup"),
         help="Base path for setup files (default: ~/alphamask_setup)"
@@ -124,7 +124,7 @@ def main():
             container_path=args.container,
             script_path=args.script,
             schema_path=str(schema_path),
-            setup_base_path=args.setup_base_path
+            setup_path=args.setup_path
         )
         
         # Create results directory

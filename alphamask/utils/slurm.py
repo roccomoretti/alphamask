@@ -12,8 +12,12 @@ from datetime import datetime
 
 from .logging import setup_logger
 from .types import ExperimentConfig, MaskingStrategy
+from .params import load_defaults
 
 logger = setup_logger()
+
+# Load defaults at module level
+DEFAULTS = load_defaults()
 
 class JobStatus(Enum):
     PENDING = "PENDING"
@@ -35,12 +39,12 @@ class SlurmJobConfig:
     container_path: str = ""
     script_path: str = ""
     schema_path: str = ""
-    setup_base_path: Optional[str] = None
+    setup_path: Optional[str] = None
 
     def __post_init__(self):
         """Set default setup base path and validate GPU configuration"""
-        if self.setup_base_path is None:
-            self.setup_base_path = os.path.expanduser("~/alphamask_setup")
+        if self.setup_path is None:
+            self.setup_path = os.path.expanduser("~/alphamask_setup")
         
         # Validate GPU configuration based on partition
         if self.partition == "clara":
@@ -113,7 +117,7 @@ class SlurmJobManager:
         self.has_slurm = self._check_slurm_available()
         
         # Set setup base path in experiment config
-        self.experiment_config.setup_base_path = self.slurm_config.setup_base_path
+        self.experiment_config.setup_path = self.slurm_config.setup_path
         
         if not self.has_slurm:
             logger.warning("SLURM not detected - jobs will run sequentially")
@@ -153,9 +157,9 @@ class SlurmJobManager:
         log_dir.mkdir(parents=True, exist_ok=True)
         
         # Create local config directory and copy schema
-        config_dir = Path(self.working_dir) / "config"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        local_schema_path = config_dir / "schema_validation.json"
+        schema_dir = Path(self.working_dir) / "schema"
+        schema_dir.mkdir(parents=True, exist_ok=True)
+        local_schema_path = schema_dir / "schema_validation.json"
         shutil.copy(schema_path, local_schema_path)
         
         # Log the paths being used
@@ -176,10 +180,7 @@ class SlurmJobManager:
 #SBATCH --partition={self.slurm_config.partition}
 #SBATCH --gres={self.slurm_config.get_gpu_constraint()}
 
-# Load required modules - use module spider to find correct versions
-module purge
-module spider cuda
-module spider gcc
+# Load required modules if needed
 
 # Print paths for debugging
 echo "Working directory: $(pwd)"
@@ -251,8 +252,6 @@ if [ "{self.experiment_config.msa_method}" = "custom_a3m" ]; then
     echo "MSA file is ready"
 fi
 
-# Print available modules for debugging
-module avail
 
 singularity exec --nv --cleanenv \
     -B /work:/work \
@@ -260,7 +259,8 @@ singularity exec --nv --cleanenv \
     {self.slurm_config.container_path} \
     python {self.slurm_config.script_path} \
     --yaml_file {config_path} \
-    --json_schema {local_schema_path}
+    --json_schema {local_schema_path} \
+    --pipeline {self.experiment_config.pipeline_type}
 """
 
         script_path = script_dir / f"{job_name}.sh"
@@ -441,6 +441,14 @@ singularity exec --nv --cleanenv \
             # Create config for this position
             config = self.experiment_config.to_dict()
             config["cols"] = [pos]
+            # Set masking configuration
+            config["masking_mode"] = "list"  # Use list mode for single position masking
+            config["mask_msa"] = True
+            config["mask_deletion_matrix"] = True
+            config["debug"] = DEFAULTS.get('debug', False)
+            config["pipeline_type"] = "masking"  # Ensure masking pipeline is used
+            config["seed"] = DEFAULTS.get('seed', 0)
+            config["num_seeds"] = DEFAULTS.get('num_seeds', 2)  # Use default from defaults.yaml
             
             config_path = configs_dir / f"config_pos_{pos}.yaml"
             with open(config_path, 'w') as f:
@@ -529,17 +537,28 @@ singularity exec --nv --cleanenv \
         """Submit control job"""
         if not self.experiment_config.run_control:
             return None
-            
+        
         # Create control config
         control_config = self.experiment_config.copy()
         control_config.jobname = f"{control_config.jobname_prefix}_vanilla_control"
+        control_config.parent_path = str(self.working_dir)  # Set parent_path to working directory
+        
+        # Create necessary directories
+        input_dir = Path(self.working_dir) / "in"
+        input_dir.mkdir(parents=True, exist_ok=True)
         
         # Use the existing config path structure
         config_path = Path(self.working_dir) / "configs" / "config_control.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Convert config to dict and ensure setup_path is set
+        config_dict = control_config.to_dict()
+        if 'setup_path' not in config_dict or not config_dict['setup_path']:
+            config_dict['setup_path'] = str(control_config.get_setup_path())
         
         # Save control config
         with open(config_path, 'w') as f:
-            yaml.dump(control_config.to_dict(), f)
+            yaml.dump(config_dict, f)
         
         logger.info(f"Created control config at: {config_path}")
         logger.info(f"Using model parameters from: {control_config.get_setup_path() / 'params'}")
@@ -557,6 +576,21 @@ singularity exec --nv --cleanenv \
             return self.submit_iterative_masking_jobs()
         elif self.experiment_config.masking_strategy == MaskingStrategy.ITERATIVE_SINGLE_MASK_MUTATE:
             return self.submit_iterative_mask_mutate_jobs()
+        elif self.experiment_config.masking_strategy == MaskingStrategy.MUTATE_AND_MASK:
+            # For MUTATE_AND_MASK, we submit a single job with the mutations and masking
+            config = self.experiment_config.to_dict()
+            config["pipeline_type"] = "mutate_and_mask"  # Ensure correct pipeline type
+            
+            config_path = self.working_dir / "configs" / "config_mutate_and_mask.yaml"
+            with open(config_path, 'w') as f:
+                yaml.dump(config, f)
+            
+            job_id = self.submit_job(
+                str(config_path),
+                f"{self.experiment_config.jobname_prefix}_mutate_and_mask"
+            )
+            return [job_id] if job_id else []
+        
         elif self.experiment_config.masking_strategy in [MaskingStrategy.MASK_POSITIONS, MaskingStrategy.UNMASK_POSITIONS]:
             return self.submit_position_masking_jobs()
         else:
