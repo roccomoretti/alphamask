@@ -253,7 +253,7 @@ if [ "{self.experiment_config.msa_method}" = "custom_a3m" ]; then
 fi
 
 
-singularity exec --nv --cleanenv \
+singularity exec --writable-tmpfs --nv --cleanenv \
     -B /home/cesar.ramirez/:/home/cesar.ramirez/ \
     -B $(pwd):$(pwd) \
     {self.slurm_config.container_path} \
