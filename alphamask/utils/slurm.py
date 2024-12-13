@@ -254,7 +254,7 @@ fi
 
 
 singularity exec --nv --cleanenv \
-    -B /work:/work \
+    -B /home/cesar.ramirez/:/home/cesar.ramirez/ \
     -B $(pwd):$(pwd) \
     {self.slurm_config.container_path} \
     python {self.slurm_config.script_path} \

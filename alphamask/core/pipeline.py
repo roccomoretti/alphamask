@@ -273,6 +273,12 @@ class DefaultPipeline:
     def run(self) -> Union[str, AlphaFoldResult]:
         """Run the pipeline with error handling."""
         try:
+            self.logger.info("Initializing AlphaMask Setup")
+            predictor = SetupAlphaFoldColabDesign(
+            self.unified_memory, self.parent_path, self.setup_path
+            )
+            predictor.setup()
+
             self.logger.info("Preparing pipeline inputs")
             prep_inputs = self._prepare_inputs()
             
