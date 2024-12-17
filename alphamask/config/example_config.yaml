@@ -1,0 +1,61 @@
+# Example AlphaMask Configuration
+proteins:
+  # Example protein with all masking strategies enabled
+  example_protein:
+    sequence: "MAEGEITTFTALTEKFNLPPGNYKKPKLLYCSNGGHFLRILPDGTVDGTRDRSDQHIQLQLSAESVGEVYIKSTETGQYLAMDTDGLLYGSQTPNEECLFLERLEENHYNTYISKKHAEKNWFVGLKKNGSCKRGPRTHYGQKAILFLPLPV"
+    uniprot_id: "P05230"
+    iterative_masking:
+      enabled: true
+      mutations:
+        - ["F21A", "Y24A"]  # Multiple mutations can be tested together
+        - ["K128N"]         # Single mutation
+      mask_token: "X"
+    
+    apriori_masking:
+      enabled: true
+      experiments:
+        - name: "known_position_F21A"
+          positions: [21]
+          mutations: ["F21A"]
+          conditions:
+            - {mask: false, mutate: false}  # Control
+            - {mask: true, mutate: false}   # Masking only
+            - {mask: false, mutate: true}   # Mutation only
+            - {mask: true, mutate: true}    # Masking + mutation
+        
+        - name: "double_mutation_study"
+          positions: [21, 24]
+          mutations: ["F21A", "Y24A"]
+          conditions:
+            - {mask: false, mutate: false}
+            - {mask: true, mutate: false}
+            - {mask: false, mutate: true}
+            - {mask: true, mutate: true}
+    
+    frustra_masking:
+      enabled: true
+      top_positions: 10
+
+  # Example protein with only iterative masking
+  minimal_protein:
+    sequence: "MAEGEITTFTALTEKFNLPPGNYKKPKLLYCSNG"
+    iterative_masking:
+      enabled: true
+      mutations:
+        - ["F21A"]
+      mask_token: "X"
+    apriori_masking:
+      enabled: false
+      experiments: []
+    frustra_masking:
+      enabled: false
+      top_positions: 0
+
+# Global settings
+global_settings:
+  mask_token: "X"
+  output_dir: "./results"
+  logging:
+    enabled: true
+    level: "INFO"
+    file: "masking_analysis.log" 

@@ -1,9 +1,11 @@
+"""Types module for AlphaMask"""
+
 from dataclasses import dataclass, asdict
-from enum import Enum
 from typing import List, Optional, Callable, Any, TypedDict, Dict, Union
+from enum import Enum
 from pathlib import Path
 import os
-
+import yaml
 
 class AlphaFoldAuxData(TypedDict, total=False):
     """Type definition for AlphaFold auxiliary data"""
@@ -27,20 +29,19 @@ class AlphaFoldResult:
     error: Optional[str]
     data: Optional[Dict[str, Any]]
 
-
 def snake_to_camel(snake_str: str) -> str:
     """Convert snake_case to camelCase."""
     components = snake_str.split('_')
     return components[0] + ''.join(x.title() for x in components[1:])
 
-
-class MaskingStrategy(Enum):
-    MASK_POSITIONS = "mask_positions"
-    UNMASK_POSITIONS = "unmask_positions"
+class MaskingStrategy(str, Enum):
+    """Enum for masking strategies"""
+    NONE = "none"
     ITERATIVE_SINGLE = "iterative_single"
     ITERATIVE_SINGLE_MASK_MUTATE = "iterative_single_mask_mutate"
+    MASK_POSITIONS = "mask_positions"
+    UNMASK_POSITIONS = "unmask_positions"
     MUTATE_AND_MASK = "mutate_and_mask"
-
 
 @dataclass
 class ExperimentConfig:
@@ -69,7 +70,7 @@ class ExperimentConfig:
     debug: bool = None
     pipeline_type: str = None
     callback_fn: Optional[Callable[[Any, Optional[str]], None]] = None
-
+    
     def __post_init__(self):
         """Load defaults after initialization."""
         from .params import load_defaults
@@ -80,7 +81,7 @@ class ExperimentConfig:
             if field != 'callback_fn' and getattr(self, field) is None:
                 if field in defaults:
                     setattr(self, field, defaults[field])
-
+    
     def copy(self) -> 'ExperimentConfig':
         """Create a deep copy of the config."""
         return ExperimentConfig(
@@ -106,7 +107,7 @@ class ExperimentConfig:
             pipeline_type=self.pipeline_type,
             callback_fn=self.callback_fn
         )
-
+    
     def get_setup_path(self) -> Path:
         """Get the setup directory path for this experiment."""
         setup_base = Path(self.setup_path or os.path.expanduser("~/alphamask_setup"))
@@ -116,7 +117,7 @@ class ExperimentConfig:
         """Ensure the setup directory exists."""
         setup_path = self.get_setup_path()
         setup_path.mkdir(parents=True, exist_ok=True)
-
+    
     def to_dict(self) -> dict:
         """Convert the config to a dictionary, handling special types and field name conversion."""
         from .params import load_defaults
@@ -174,9 +175,28 @@ class ExperimentConfig:
                 
         return converted
 
+    def save(self, path: Union[str, Path]) -> None:
+        """Save the configuration to a YAML file.
+        
+        Args:
+            path: Path to save the YAML file
+        """
+        # Convert path to Path object
+        path = Path(path)
+        
+        # Create parent directory if it doesn't exist
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Convert config to dictionary
+        config_dict = self.to_dict()
+        
+        # Save to YAML file
+        with open(path, 'w') as f:
+            yaml.dump(config_dict, f, default_flow_style=False)
 
 @dataclass
 class ExperimentPaths:
+    """Paths for experiment outputs and resources"""
     vanilla_jobname: Optional[str] = None
     vanilla_path: Optional[str] = None
     vanilla_pipeline: Optional[Any] = None
@@ -194,5 +214,6 @@ __all__ = [
     'AlphaFoldResult',
     'MaskingStrategy',
     'ExperimentConfig',
+    'ExperimentPaths',
     'snake_to_camel'
 ]

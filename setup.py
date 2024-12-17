@@ -6,14 +6,17 @@ setup(
     packages=find_packages(),
     entry_points={
         'console_scripts': [
-            'alphamask-setup=alphamask.scripts.setup_experiments:run',
-            'alphamask-run=alphamask.scripts.run_experiments:main',
+            'alphamask=alphamask.cli.main:main',
             'alphamask-predict=predict:main',
             'alphamask-check-jax=check_jax:main',
         ],
     },
     package_data={
-        'alphamask': ['config/*.yaml', 'config/*.json'],
+        'alphamask': [
+            'config/*.yaml',
+            'config/*.json',
+            'docs/*.md'
+        ],
     },
     install_requires=[
         'pyyaml',
@@ -26,6 +29,7 @@ setup(
         'jax==0.4.26',
         'ipython',
         'plotly==5.24.1',
+        'rich>=10.0.0',
     ],
     dependency_links=[
         "git+https://github.com/sokrypton/ColabDesign.git@70a821c877a1a1a7f09682b3b6272b72e0719975#egg=colabdesign",

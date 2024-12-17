@@ -35,7 +35,15 @@ Homepage = "https://github.com/engelberger/alphamask"
 Repository = "https://github.com/engelberger/alphamask"
 
 [tool.setuptools]
-packages = ["alphamask"]
+packages = ["alphamask", "alphamask.cli"]
 
 [tool.setuptools.package-data]
-alphamask = ["py.typed"] 
+alphamask = [
+    "py.typed",
+    "config/*.yaml",
+    "config/*.json",
+    "docs/*.md"
+]
+
+[project.scripts]
+alphamask = "alphamask.cli.main:main"

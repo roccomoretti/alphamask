@@ -1,21 +1,144 @@
-her2:
-  sequence: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-  mutations:
-    - "A1A"
-    - "A2A"
-  known_positions: [1, 2]
-
-rfah:
-  sequence: "MSEQHAQGADAVVDDSSRPNDPEPKRAREQHHHHHH"
-  mutations:
-    - "M1A"
-    - "M2A"
-  known_positions: [142, 144, 146]
-  frustra_positions: [142, 144, 146]
-
-i89:
-  sequence: "GSHMASMEDLQAEARAFLSEEMIAEFKAAFDMFDADGGGDISYKAVGTVFRMLGINPSKEVLDYLKEKIDVDGSGTIDFEEFLVLMVYIMKQDA"
-  mutations:
-    - "I81S"
-  known_positions: [89]
-  frustra_positions: [89] 
+proteins:
+  her2:
+    sequence: "RILKETELRKVKVLGSGAFGTVYKGIWIPDGENVKIPVAIKVLRENTSPKANKEILDEAYVMAGVGSPYVSRLLGICLTSTVQLVTQLMPYGCLLDHVRENRGRLGSQDLLNWCMQIAKGMSYLEDVRLVHRDLAARNVLVKSPNHVKITDFGLARLLDIDETEYHADGGKVPIKWMALESILRRRFTHQSDVWSYGVTVWELMTFGAKPYDGIPAREIPDLLEKGERLPQPPICTIDVYMIMVKCWMIDSECRPRFRELVSEFSRMARDPQRFVVIQNED"
+    iterative_masking:
+      enabled: false
+      mutations:
+        - ["T150A"]
+        - ["L157R"]
+        - ["T150A", "L157R"]
+      mask_token: "X"
+    apriori_masking:
+      enabled: true
+      experiments:
+        - name: "Abdullah_et_al_2023_T150A"
+          positions: [150]
+          mutations: ["T150A"]
+          conditions:
+            - {mask: false, mutate: false}
+            - {mask: true, mutate: false}
+            - {mask: false, mutate: true}
+            - {mask: true, mutate: true}
+        - name: "Abdullah_et_al_2023_L157R"
+          positions: [157]
+          mutations: ["L157R"]
+          conditions:
+            - {mask: false, mutate: false}
+            - {mask: true, mutate: false}
+            - {mask: false, mutate: true}
+            - {mask: true, mutate: true}
+        - name: "Abdullah_et_al_2023_T150A_L157R"
+          positions: [150, 157]
+          mutations: ["T150A", "L157R"]
+          conditions:
+            - {mask: false, mutate: false}
+            - {mask: true, mutate: false}
+            - {mask: false, mutate: true}
+            - {mask: true, mutate: true}
+    frustra_masking:
+      enabled: false
+      top_positions: 10  # Will analyze top 10 minimally frustrated positions
+  rfah:
+    sequence: "MQSWYLLYCKRGQLQRAQEHLERQAVNCLAPMITLEKIVRGKRTAVSEPLFPNYLFVEFDPEVIHTTTINATRGVSHFVRFGASPAIVPSAVIHQLSVYKPKDIVDPATPYPGDKVIITEGAFEGFQAIFTEPDGEARSMLLLNLINKEIKHSVKNTEFRKL"
+    iterative_masking:
+      enabled: false
+      mutations:
+        - ["L142K"]
+        - ["L142S"]
+        - ["I146D"]
+        - ["I146F"]
+        - ["L142K", "I146D"]
+        - ["L142S", "I146F"]
+      mask_token: "X"
+    apriori_masking:
+      enabled: true
+      experiments:
+        - name: "Freiberger_et_al_2023_L142K"
+          positions: [142]
+          mutations: ["L142K"]
+          conditions:
+            - {mask: false, mutate: false}
+            - {mask: true, mutate: false}
+            - {mask: false, mutate: true}
+            - {mask: true, mutate: true}
+        - name: "Freiberger_et_al_2023_I146D"
+          positions: [146]
+          mutations: ["I146D"]
+          conditions:
+            - {mask: false, mutate: false}
+            - {mask: true, mutate: false}
+            - {mask: false, mutate: true}
+            - {mask: true, mutate: true}
+        - name: "Freiberger_et_al_2023_L142K_I146D"
+          positions: [142, 146]
+          mutations: ["L142K", "I146D"]
+          conditions:
+            - {mask: false, mutate: false}
+            - {mask: true, mutate: false}
+            - {mask: false, mutate: true}
+            - {mask: true, mutate: true}
+        - name: "Freiberger_et_al_2023_L142S"
+          positions: [142]
+          mutations: ["L142S"]
+          conditions:
+            - {mask: false, mutate: false}
+            - {mask: true, mutate: false}
+            - {mask: false, mutate: true}
+            - {mask: true, mutate: true}
+        - name: "Freiberger_et_al_2023_I146F"
+          positions: [146]
+          mutations: ["I146F"]
+          conditions:
+            - {mask: false, mutate: false}
+            - {mask: true, mutate: false}
+            - {mask: false, mutate: true}
+            - {mask: true, mutate: true}
+        - name: "Freiberger_et_al_2023_L142S_I146F"
+          positions: [142, 146]
+          mutations: ["L142S", "I146F"]
+          conditions:
+            - {mask: false, mutate: false}
+            - {mask: true, mutate: false}
+            - {mask: false, mutate: true}
+            - {mask: true, mutate: true}
+    frustra_masking:
+      enabled: false
+      top_positions: 10
+  i89:
+    sequence: "GSHMASMEDLQAEARAFLSEEMIAEFKAAFDMFDADGGGDISYKAVGTVFRMLGINPSKEVLDYLKEKIDVDGSGTIDFEEFLVLMVYIMKQDA"
+    iterative_masking:
+      enabled: false
+      mutations:
+        - ["I89S"]
+        - ["I89N"]
+      mask_token: "X"
+    apriori_masking:
+      enabled: true
+      experiments:
+        - name: "Known_position_experiment"
+          positions: [89]
+          mutations: ["I89S"]
+          conditions:
+            - {mask: false, mutate: false}
+            - {mask: true, mutate: false}
+            - {mask: false, mutate: true}
+            - {mask: true, mutate: true}
+        - name: "Known_position_experiment"
+          positions: [89]
+          mutations: ["I89N"]
+          conditions:
+            - {mask: false, mutate: false}
+            - {mask: true, mutate: false}
+            - {mask: false, mutate: true}
+            - {mask: true, mutate: true}
+    frustra_masking:
+      enabled: false
+      top_positions: 10
+# Global configuration
+global_settings:
+  mask_token: "X"
+  output_dir: "./results"
+  logging:
+    enabled: true
+    level: "INFO"
+    file: "masking_analysis.log"

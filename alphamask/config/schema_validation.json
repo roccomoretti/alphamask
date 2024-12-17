@@ -4,10 +4,15 @@
     "description": "A schema for validating parameters for the DefaultPipeline",
     "type": "object",
     "properties": {
+      "pipeline_type": {
+        "description": "The type of pipeline to run",
+        "type": "string",
+        "enum": ["default", "vanilla", "masking", "mutate", "mutate_and_mask"]
+      },
       "masking_strategy": {
         "description": "The masking strategy to use",
         "type": "string",
-        "enum": ["mask_positions", "unmask_positions", "iterative_single", "iterative_single_mask_mutate", "mutate_and_mask"]
+        "enum": ["none", "mask_positions", "unmask_positions", "iterative_single", "iterative_single_mask_mutate", "mutate_and_mask"]
       },
       "unified_memory": {
         "description": "If True, use unified memory.",
@@ -217,7 +222,6 @@
     },
     "required": [
       "unified_memory",
-      "parent_path",
       "sequence",
       "jobname",
       "copies",
@@ -254,6 +258,8 @@
       "mask_deletion_matrix",
       "cols",
       "cols_range",
-      "mask_identity"
+      "mask_identity",
+      "parent_path",
+      "masking_strategy"
     ]
-  }
+}

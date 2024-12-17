@@ -48,7 +48,7 @@ class SlurmJobConfig:
         
         # Validate GPU configuration based on partition
         if self.partition == "clara":
-            valid_gpus = ["rtx2080ti"]
+            valid_gpus = ["rtx2080ti", "v100"]
             if self.gpu_type not in valid_gpus:
                 logger.warning(f"GPU type {self.gpu_type} not available on partition {self.partition}. Using rtx2080ti.")
                 self.gpu_type = "rtx2080ti"
@@ -119,6 +119,9 @@ class SlurmJobManager:
         # Set setup base path in experiment config
         self.experiment_config.setup_path = self.slurm_config.setup_path
         
+        # Store schema path
+        self.schema_path = self.slurm_config.schema_path
+        
         if not self.has_slurm:
             logger.warning("SLURM not detected - jobs will run sequentially")
         
@@ -145,50 +148,92 @@ class SlurmJobManager:
         logger.info(f"Log directory: {self.log_dir}")
 
     def create_job_script(self, config_path: str, job_name: str) -> str:
-        """Create a SLURM job script"""
-        # Get the base directory from config path
-        config_path = Path(config_path).resolve()
-        schema_path = Path(self.slurm_config.schema_path).resolve()
-        
-        # Create script and log directories if they don't exist
-        script_dir = Path(self.working_dir) / "scripts"
-        log_dir = Path(self.working_dir) / "logs"
-        script_dir.mkdir(parents=True, exist_ok=True)
-        log_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create local config directory and copy schema
-        schema_dir = Path(self.working_dir) / "schema"
-        schema_dir.mkdir(parents=True, exist_ok=True)
-        local_schema_path = schema_dir / "schema_validation.json"
-        shutil.copy(schema_path, local_schema_path)
-        
-        # Log the paths being used
-        logger.info(f"Config path: {config_path}")
-        logger.info(f"Schema path: {schema_path}")
-        logger.info(f"Local schema path: {local_schema_path}")
-        logger.info(f"Working directory: {self.working_dir}")
-        logger.info(f"Script directory: {script_dir}")
-        logger.info(f"Log directory: {log_dir}")
-        
-        script_content = f"""#!/bin/bash
+        """Create a SLURM job script for the given configuration.
+
+        Args:
+            config_path (str): Path to the configuration file
+            job_name (str): Name of the job
+
+        Returns:
+            str: Path to the created job script
+        """
+        try:
+            # Convert all paths to absolute paths
+            config_path = str(Path(config_path).resolve())
+            container_path = str(Path(self.slurm_config.container_path).resolve())
+            script_path = str(Path(self.slurm_config.script_path).resolve())
+            working_dir = str(Path(self.working_dir).resolve())
+            
+            # Create script path
+            script_path_obj = Path(self.script_dir) / f"{job_name}.sh"
+            script_path_abs = str(script_path_obj.resolve())
+            
+            # Ensure all required directories exist
+            for dir_path in [
+                self.working_dir,
+                self.config_dir,
+                self.script_dir,
+                self.log_dir,
+                Path(self.working_dir) / "in",
+                Path(self.working_dir) / "in" / "msa",
+                Path(self.working_dir) / "out",
+                Path(self.working_dir) / "out" / "pdbs",
+                Path(self.working_dir) / "schema"
+            ]:
+                dir_path = Path(dir_path)
+                dir_path.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Ensuring directory exists: {dir_path}")
+            
+            # Get local schema path and ensure schema directory exists
+            schema_dir = Path(self.working_dir) / "schema"
+            local_schema_path = schema_dir / "schema_validation.json"
+            
+            # Copy schema file if it exists
+            if Path(self.schema_path).exists():
+                shutil.copy2(self.schema_path, local_schema_path)
+                logger.info(f"Copied schema from {self.schema_path} to {local_schema_path}")
+            else:
+                logger.warning(f"Schema file not found at {self.schema_path}")
+                local_schema_path.touch()
+                logger.info(f"Created empty schema file at {local_schema_path}")
+
+            # Verify required files exist
+            required_files = {
+                "Container": container_path,
+                "Script": script_path,
+                "Config": config_path
+            }
+            
+            for name, path in required_files.items():
+                if not Path(path).exists():
+                    raise FileNotFoundError(f"{name} not found at {path}")
+                logger.info(f"Verified {name} exists at {path}")
+
+            # Create script content with absolute paths
+            script_content = f"""#!/bin/bash
 #SBATCH --job-name={job_name}
-#SBATCH --output={log_dir}/{job_name}.out
-#SBATCH --error={log_dir}/{job_name}.err
-#SBATCH --time={self.slurm_config.time}
-#SBATCH --mem={self.slurm_config.memory}
-#SBATCH --cpus-per-task={self.slurm_config.cpus_per_task}
+#SBATCH --output={str(Path(self.log_dir) / f"{job_name}.out")}
+#SBATCH --error={str(Path(self.log_dir) / f"{job_name}.err")}
+#SBATCH --time=24:00:00
+#SBATCH --mem=300000
+#SBATCH --cpus-per-task=1
 #SBATCH --partition={self.slurm_config.partition}
-#SBATCH --gres={self.slurm_config.get_gpu_constraint()}
+#SBATCH --gres=gpu:{self.slurm_config.gpu_type}:1
 
 # Load required modules if needed
 
 # Print paths for debugging
-echo "Working directory: $(pwd)"
+echo "Working directory: {working_dir}"
 echo "Config path: {config_path}"
-echo "Script path: {self.slurm_config.script_path}"
+echo "Script path: {script_path}"
 echo "Schema path: {local_schema_path}"
 
-cd {self.working_dir}
+# Create required directories
+mkdir -p {working_dir}/in/msa
+mkdir -p {working_dir}/out/pdbs
+mkdir -p {working_dir}/schema
+
+cd {working_dir}
 
 # Debug commands to verify paths and permissions
 echo "Listing working directory contents:"
@@ -211,6 +256,16 @@ fi
 
 if [ ! -f "{local_schema_path}" ]; then
     echo "Error: Schema file not found at {local_schema_path}"
+    exit 1
+fi
+
+if [ ! -f "{container_path}" ]; then
+    echo "Error: Container not found at {container_path}"
+    exit 1
+fi
+
+if [ ! -f "{script_path}" ]; then
+    echo "Error: Script not found at {script_path}"
     exit 1
 fi
 
@@ -243,189 +298,179 @@ wait_for_file() {{
 }}
 
 # If this is a masking job and using custom MSA, wait for the MSA file
-if [ "{self.experiment_config.msa_method}" = "custom_a3m" ]; then
-    echo "Waiting for MSA file to be fully written: {self.experiment_config.custom_a3m_path}"
-    if ! wait_for_file "{self.experiment_config.custom_a3m_path}"; then
+if [ "{getattr(self.experiment_config, 'msa_method', 'mmseqs2')}" = "custom_a3m" ] && [ -n "{getattr(self.experiment_config, 'custom_a3m_path', '')}" ]; then
+    echo "Waiting for MSA file to be fully written: {getattr(self.experiment_config, 'custom_a3m_path', '')}"
+    if ! wait_for_file "{getattr(self.experiment_config, 'custom_a3m_path', '')}"; then
         echo "Error: Failed to get MSA file"
         exit 1
     fi
     echo "MSA file is ready"
 fi
 
-
-singularity exec --nv --cleanenv \
-    -B /work:/work \
-    -B $(pwd):$(pwd) \
-    {self.slurm_config.container_path} \
-    python {self.slurm_config.script_path} \
-    --yaml_file {config_path} \
-    --json_schema {local_schema_path} \
-    --pipeline {self.experiment_config.pipeline_type}
+# Run the prediction script using singularity
+singularity exec --nv --cleanenv \\
+    -B /work:/work \\
+    -B {working_dir}:{working_dir} \\
+    {container_path} \\
+    python {script_path} \\
+    --yaml_file {config_path} \\
+    --json_schema {local_schema_path} \\
+    --pipeline {self.experiment_config.pipeline_type or "default"}
 """
-
-        script_path = script_dir / f"{job_name}.sh"
-        with open(script_path, 'w') as f:
-            f.write(script_content)
-        
-        # Make the script executable
-        os.chmod(script_path, 0o755)
-        
-        logger.info(f"Created job script at: {script_path}")
-        
-        return str(script_path)
+            
+            # Write script to file
+            with open(script_path_abs, 'w') as f:
+                f.write(script_content)
+            
+            # Make script executable
+            Path(script_path_abs).chmod(0o755)
+            
+            # Log script creation
+            logger.info(f"Created job script at: {script_path_abs}")
+            logger.info(f"Generated SLURM script for {job_name}:")
+            logger.info(script_content)
+            
+            return script_path_abs
+            
+        except Exception as e:
+            logger.error(f"Error creating job script: {str(e)}")
+            raise
 
     def submit_job(self, config_path: str, job_name: str) -> Optional[int]:
         """Submit a job either to SLURM or run it directly"""
-        if self.has_slurm:
-            return self._submit_slurm_job(config_path, job_name)
-        else:
-            return self._run_job_locally(config_path, job_name)
-
-    def _submit_slurm_job(self, config_path: str, job_name: str) -> Optional[int]:
-        """Submit job to SLURM"""
-        script_path = self.create_job_script(config_path, job_name)
-        
-        # Log the script contents
-        logger.info(f"Generated SLURM script for {job_name}:")
-        with open(script_path, 'r') as f:
-            logger.info(f"\n{f.read()}")
-        
         try:
-            # Get the script directory to use as working directory
-            script_dir = str(Path(script_path).parent)
+            # Log input parameters
+            logger.info(f"Submitting job with config_path: {config_path}, job_name: {job_name}")
+            logger.info(f"Working directory: {self.working_dir}")
+            logger.info(f"Config file exists: {Path(config_path).exists()}")
             
-            # Log the sbatch command
-            cmd = ["sbatch", "-D", script_dir, script_path]
-            logger.info(f"Submitting SLURM job with command: {' '.join(cmd)}")
+            # Create the job script first
+            script_path = self.create_job_script(config_path, job_name)
+            logger.info(f"Created job script at: {script_path}")
+            logger.info(f"Job script exists: {Path(script_path).exists()}")
             
-            # Run sbatch without check=True to handle the error ourselves
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True
-            )
+            if self.has_slurm:
+                # Submit to SLURM
+                return self._submit_slurm_job(script_path)
+            else:
+                # Run locally
+                return self._run_job_locally(script_path)
             
-            # Log the complete output regardless of success/failure
-            logger.info(f"sbatch stdout:\n{result.stdout}")
-            if result.stderr:
-                logger.error(f"sbatch stderr:\n{result.stderr}")
-            
-            # Check return code and raise if non-zero
-            result.check_returncode()
-            
-            job_id = int(result.stdout.strip().split()[-1])
-            logger.info(f"Successfully submitted SLURM job {job_name} with ID {job_id}")
-            
-            # Log additional job info using scontrol
-            try:
-                scontrol_cmd = ["scontrol", "show", "job", str(job_id)]
-                scontrol_result = subprocess.run(scontrol_cmd, capture_output=True, text=True)
-                if scontrol_result.returncode == 0:
-                    logger.debug(f"Job details:\n{scontrol_result.stdout}")
-                else:
-                    logger.warning(f"Could not get job details: {scontrol_result.stderr}")
-            except Exception as e:
-                logger.warning(f"Error getting job details: {e}")
-            
-            return job_id
-            
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to submit SLURM job {job_name}")
-            logger.error(f"Command '{' '.join(cmd)}' failed with return code {e.returncode}")
-            logger.error(f"stdout: {e.stdout}")
-            logger.error(f"stderr: {e.stderr}")
-            
-            # Log SLURM partition status for debugging
-            try:
-                sinfo_result = subprocess.run(["sinfo"], capture_output=True, text=True)
-                logger.info("Current SLURM partition status:")
-                logger.info(sinfo_result.stdout)
-            except Exception as e:
-                logger.warning(f"Could not get SLURM partition status: {e}")
-            
+        except Exception as e:
+            logger.error(f"Error submitting job: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            logger.error(f"Error traceback: ", exc_info=True)
             return None
 
-    def _run_job_locally(self, config_path: str, job_name: str) -> Optional[int]:
-        """Run job locally using singularity"""
+    def _submit_slurm_job(self, script_path: str) -> Optional[int]:
+        """Submit job to SLURM"""
         try:
-            logger.info(f"Running job {job_name} locally")
+            # Check if sbatch exists and get its path
+            sbatch_path = shutil.which('sbatch')
+            logger.info(f"sbatch command path: {sbatch_path}")
             
-            # Convert all paths to absolute paths
-            workspace_dir = Path.cwd().resolve()
-            script_path = workspace_dir / self.slurm_config.script_path
-            config_path = workspace_dir / config_path
-            schema_path = workspace_dir / self.slurm_config.schema_path
-            working_dir = workspace_dir / self.working_dir
+            # Ensure script directory exists
+            script_dir = Path(script_path).parent
+            logger.info(f"Ensuring script directory exists: {script_dir}")
+            script_dir.mkdir(parents=True, exist_ok=True)
             
-            # Create config directory and file
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(config_path, 'w') as f:
-                yaml.dump(self.experiment_config.to_dict(), f)
+            # Log file existence and permissions
+            logger.info(f"Script path exists: {Path(script_path).exists()}")
+            if Path(script_path).exists():
+                logger.info(f"Script permissions: {oct(Path(script_path).stat().st_mode)}")
             
-            # Create bind paths for singularity
-            bind_paths = [
-                f"{workspace_dir}:{workspace_dir}",
-                f"{working_dir}:{working_dir}"
-            ]
+            # Check if working directory exists before changing to it
+            if not Path(self.working_dir).exists():
+                logger.error(f"Working directory does not exist: {self.working_dir}")
+                return None
             
-            cmd = [
-                "singularity", "exec",
-                "--nv",
-                "--cleanenv",
-                *[f"--bind={path}" for path in bind_paths],
-                self.slurm_config.container_path,
-                "python", str(script_path),
-                "--yaml_file", str(config_path),
-                "--json_schema", str(schema_path)
-            ]
+            # Try to get current directory, use /tmp as fallback
+            try:
+                original_dir = os.getcwd()
+            except FileNotFoundError:
+                original_dir = "/tmp"
+                logger.warning(f"Current directory not accessible, using fallback: {original_dir}")
             
-            # Create output and error files
-            out_file = working_dir / "logs" / f"{job_name}.out"
-            err_file = working_dir / "logs" / f"{job_name}.err"
-            out_file.parent.mkdir(exist_ok=True)
+            logger.info(f"Current directory before cd: {original_dir}")
+            os.chdir(str(self.working_dir))
+            logger.info(f"Changed to working directory: {os.getcwd()}")
             
-            logger.info(f"Command: {' '.join(cmd)}")
-            logger.info(f"Working directory: {working_dir}")
-            logger.info(f"Script path: {script_path}")
-            logger.info(f"Config path: {config_path}")
-            logger.info(f"Schema path: {schema_path}")
-            logger.info(f"Output file: {out_file}")
-            logger.info(f"Error file: {err_file}")
+            # Log environment PATH
+            logger.info(f"PATH environment variable: {os.environ.get('PATH', 'Not found')}")
             
-            # Run the command and capture output
-            process = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False  # Don't raise exception, we'll handle it
-            )
+            # Submit job
+            cmd = f"sbatch {script_path}"
+            logger.info(f"Submitting SLURM job with command: {cmd}")
+            logger.info(f"Full script path: {os.path.abspath(script_path)}")
             
-            # Save output and error to files
-            with open(out_file, 'w') as f:
-                f.write(process.stdout)
-            with open(err_file, 'w') as f:
-                f.write(process.stderr)
+            # Try to execute sbatch directly with full path if available
+            if sbatch_path:
+                cmd = f"{sbatch_path} {script_path}"
             
-            if process.returncode != 0:
-                logger.error(f"Command failed with return code {process.returncode}")
-                logger.error("Command output:")
-                logger.error(process.stdout)
-                logger.error("Command error:")
-                logger.error(process.stderr)
-                raise subprocess.CalledProcessError(
-                    process.returncode, cmd, 
-                    output=process.stdout, 
-                    stderr=process.stderr
-                )
+            result = subprocess.run(cmd.split(), capture_output=True, text=True)
             
-            logger.info(f"Completed job {job_name}")
-            return 0  # Return 0 as a pseudo job ID for local runs
+            # Try to change back to original directory, but don't fail if we can't
+            try:
+                os.chdir(original_dir)
+            except (FileNotFoundError, PermissionError) as e:
+                logger.warning(f"Could not change back to original directory: {e}")
             
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to run job {job_name} locally")
-            logger.error(f"Command output: {e.output}")
-            logger.error(f"Command error: {e.stderr}")
+            # Check result
+            if result.returncode == 0:
+                # Parse job ID from output
+                job_id = int(result.stdout.strip().split()[-1])
+                logger.info(f"Successfully submitted job {job_id}")
+                
+                # Log SLURM partition status
+                # try:
+                #     sinfo_result = subprocess.run(["sinfo"], capture_output=True, text=True)
+                #     logger.info("Current SLURM partition status:")
+                #     logger.info(sinfo_result.stdout)
+                # except Exception as e:
+                #     logger.warning(f"Could not get SLURM partition status: {e}")
+                
+                return job_id
+            else:
+                logger.error(f"Failed to submit SLURM job")
+                logger.error(f"stdout: {result.stdout}")
+                logger.error(f"stderr: {result.stderr}")
+                return None
+            
+        except Exception as e:
+            logger.error(f"Error submitting job: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            logger.error(f"Error traceback:", exc_info=True)
+            return None
+
+    def _run_job_locally(self, script_path: str) -> Optional[int]:
+        """Run job locally using bash"""
+        try:
+            logger.info(f"Running job locally")
+            
+            # Change to working directory
+            original_dir = os.getcwd()
+            os.chdir(str(self.working_dir))
+            
+            # Run the script
+            cmd = f"bash {script_path}"
+            logger.info(f"Running command: {cmd}")
+            result = subprocess.run(cmd.split(), capture_output=True, text=True)
+            
+            # Change back to original directory
+            os.chdir(original_dir)
+            
+            # Check result
+            if result.returncode == 0:
+                logger.info("Successfully completed local job")
+                return 0  # Return 0 as pseudo job ID for local runs
+            else:
+                logger.error(f"Failed to run job locally")
+                logger.error(f"stdout: {result.stdout}")
+                logger.error(f"stderr: {result.stderr}")
+                return None
+            
+        except Exception as e:
+            logger.error(f"Error running job locally: {str(e)}")
             return None
 
     def submit_iterative_masking_jobs(self) -> List[int]:
@@ -572,7 +617,22 @@ singularity exec --nv --cleanenv \
 
     def submit_masking_jobs(self) -> List[int]:
         """Submit jobs based on masking strategy"""
-        if self.experiment_config.masking_strategy == MaskingStrategy.ITERATIVE_SINGLE:
+        if self.experiment_config.masking_strategy == MaskingStrategy.NONE:
+            # For no masking, just submit a single job with default settings
+            config = self.experiment_config.to_dict()
+            config["pipeline_type"] = "default"  # Use default pipeline for no masking
+            
+            config_path = self.working_dir / "configs" / "config_no_masking.yaml"
+            with open(config_path, 'w') as f:
+                yaml.dump(config, f)
+            
+            job_id = self.submit_job(
+                str(config_path),
+                f"{self.experiment_config.jobname_prefix}_no_masking"
+            )
+            return [job_id] if job_id else []
+            
+        elif self.experiment_config.masking_strategy == MaskingStrategy.ITERATIVE_SINGLE:
             return self.submit_iterative_masking_jobs()
         elif self.experiment_config.masking_strategy == MaskingStrategy.ITERATIVE_SINGLE_MASK_MUTATE:
             return self.submit_iterative_mask_mutate_jobs()

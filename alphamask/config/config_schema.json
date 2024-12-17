@@ -1,0 +1,177 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "AlphaMask Configuration",
+    "description": "Schema for validating AlphaMask experiment configurations",
+    "type": "object",
+    "required": ["proteins", "global_settings"],
+    "properties": {
+        "proteins": {
+            "type": "object",
+            "patternProperties": {
+                "^[a-zA-Z0-9_]+$": {
+                    "type": "object",
+                    "required": ["sequence", "iterative_masking", "apriori_masking", "frustra_masking"],
+                    "properties": {
+                        "sequence": {
+                            "type": "string",
+                            "pattern": "^[ARNDCQEGHILKMFPSTWYV]+$",
+                            "description": "Protein sequence using standard amino acid codes"
+                        },
+                        "uniprot_id": {
+                            "type": "string",
+                            "pattern": "^[A-Z0-9]+$",
+                            "description": "Optional UniProt identifier"
+                        },
+                        "masking_strategy": {
+                            "type": "string",
+                            "description": "The masking strategy to use",
+                            "enum": [
+                                "none",
+                                "mask_positions",
+                                "unmask_positions",
+                                "iterative_single",
+                                "iterative_single_mask_mutate",
+                                "mutate_and_mask"
+                            ]
+                        },
+                        "iterative_masking": {
+                            "type": "object",
+                            "required": ["enabled"],
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean"
+                                },
+                                "mutations": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string",
+                                            "pattern": "^[ARNDCQEGHILKMFPSTWYV]\\d+[ARNDCQEGHILKMFPSTWYV]$"
+                                        }
+                                    }
+                                },
+                                "mask_token": {
+                                    "type": "string",
+                                    "default": "X",
+                                    "minLength": 1,
+                                    "maxLength": 1
+                                }
+                            }
+                        },
+                        "apriori_masking": {
+                            "type": "object",
+                            "required": ["enabled"],
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean"
+                                },
+                                "experiments": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["name", "positions", "mutations", "conditions"],
+                                        "properties": {
+                                            "name": {
+                                                "type": "string",
+                                                "pattern": "^[a-zA-Z0-9_]+$"
+                                            },
+                                            "positions": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "integer",
+                                                    "minimum": 1
+                                                }
+                                            },
+                                            "mutations": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string",
+                                                    "pattern": "^[ARNDCQEGHILKMFPSTWYV]\\d+[ARNDCQEGHILKMFPSTWYV]$"
+                                                }
+                                            },
+                                            "conditions": {
+                                                "type": "array",
+                                                "minItems": 4,
+                                                "maxItems": 4,
+                                                "items": {
+                                                    "type": "object",
+                                                    "required": ["mask", "mutate"],
+                                                    "properties": {
+                                                        "mask": {
+                                                            "type": "boolean"
+                                                        },
+                                                        "mutate": {
+                                                            "type": "boolean"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "frustra_masking": {
+                            "type": "object",
+                            "required": ["enabled", "top_positions"],
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean"
+                                },
+                                "top_positions": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "minProperties": 1
+        },
+        "global_settings": {
+            "type": "object",
+            "required": ["mask_token", "output_dir", "logging"],
+            "properties": {
+                "mask_token": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1,
+                    "default": "X"
+                },
+                "output_dir": {
+                    "type": "string"
+                },
+                "logging": {
+                    "type": "object",
+                    "required": ["enabled", "level", "file"],
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean"
+                        },
+                        "level": {
+                            "type": "string",
+                            "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+                        },
+                        "file": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "masking_strategy": {
+            "type": "string",
+            "description": "The masking strategy to use",
+            "enum": [
+                "none",
+                "mask_positions",
+                "unmask_positions",
+                "iterative_single",
+                "iterative_single_mask_mutate",
+                "mutate_and_mask"
+            ]
+        }
+    }
+} 

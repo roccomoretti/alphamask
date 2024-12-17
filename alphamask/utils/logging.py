@@ -1,6 +1,7 @@
 import logging
 from typing import Optional
 import sys
+from pathlib import Path
 
 def is_notebook() -> bool:
     """Check if we are running in a Jupyter notebook."""
@@ -64,3 +65,56 @@ def setup_logger(name: Optional[str] = None) -> logging.Logger:
     logger.addHandler(notebook_handler)
     
     return logger
+
+def setup_logging(log_dir: Optional[Path] = None, debug: bool = False, disable: bool = False) -> None:
+    """Set up logging configuration for the application.
+    
+    Args:
+        log_dir: Optional directory for log files. If provided, logs will be written to a file
+                in this directory in addition to console output.
+        debug: If True, sets logging level to DEBUG, otherwise INFO.
+        disable: If True, disables all logging output.
+    """
+    if disable:
+        # Disable all logging
+        logging.getLogger().setLevel(logging.CRITICAL + 1)
+        return
+
+    # Create log directory if it doesn't exist
+    if log_dir is not None:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "alphamask.log"
+    else:
+        log_file = None
+    
+    # Set up handlers
+    handlers = [logging.StreamHandler()]
+    if log_file is not None:
+        handlers.append(logging.FileHandler(str(log_file)))
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=handlers
+    )
+    
+    # Set up root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG if debug else logging.INFO)
+    
+    # Remove any existing handlers to avoid duplicates
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # Add configured handlers
+    for handler in handlers:
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        root_logger.addHandler(handler)
+    
+    # Log initial setup
+    if not disable:
+        logging.info("Logging system initialized")
+        if debug:
+            logging.debug("Debug logging enabled")
