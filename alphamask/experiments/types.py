@@ -2,6 +2,9 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional, Set
 from enum import Enum
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ValidationError(Exception):
     """Custom exception for validation errors"""
@@ -93,4 +96,15 @@ class MaskingConfiguration:
     Entry point for the entire analysis system.
     """
     proteins: Dict[str, ProteinConfig]
-    global_settings: GlobalSettings 
+    global_settings: GlobalSettings
+    schema_path: str
+
+    def __post_init__(self):
+        """Validate schema path after initialization"""
+        if not self.schema_path:
+            raise ValidationError("Schema path not specified")
+        schema_path = Path(self.schema_path)
+        if not schema_path.exists():
+            raise ValidationError(f"Schema file not found: {schema_path}")
+        if not schema_path.is_file():
+            raise ValidationError(f"Schema path is not a file: {schema_path}")

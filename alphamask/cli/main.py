@@ -1,9 +1,21 @@
 import argparse
 import sys
-import logging
 from pathlib import Path
+import logging
+import traceback
 
-from .commands import setup_cmd, run_cmd, help_cmd
+# Configure logging first, before any other imports
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+# Get logger for this module
+logger = logging.getLogger("alphamask.cli.main")
+logger.setLevel(logging.DEBUG)
+
+from .commands import setup_cmd, submit_jobs_cmd, help_cmd, predict_cmd, predict_job_cmd
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the main argument parser"""
@@ -106,12 +118,6 @@ def create_parser() -> argparse.ArgumentParser:
         help="Path to Singularity container"
     )
     run_parser.add_argument(
-        "--script",
-        type=str,
-        required=True,
-        help="Path to prediction script"
-    )
-    run_parser.add_argument(
         "--schema",
         type=str,
         required=True,
@@ -138,7 +144,7 @@ def create_parser() -> argparse.ArgumentParser:
     # Predict command
     predict_parser = subparsers.add_parser(
         "predict",
-        help="Run predictions",
+        help="Run direct predictions without experiments or SLURM",
         parents=[parent_parser]
     )
     predict_parser.add_argument(
@@ -153,9 +159,38 @@ def create_parser() -> argparse.ArgumentParser:
     )
     predict_parser.add_argument(
         "--pipeline",
-        choices=["default", "masking", "mutate", "mutate_and_mask"],
+        choices=["default", "vanilla", "masking", "mutate", "mutate_and_mask"],
         default="default",
-        help="Pipeline type"
+        help="Pipeline type ('vanilla' is an alias for 'default')"
+    )
+    
+    # Predict Job command (for SLURM execution)
+    predict_job_parser = subparsers.add_parser(
+        "predict-job",
+        help="Run predictions within SLURM job context",
+        parents=[parent_parser]
+    )
+    predict_job_parser.add_argument(
+        "--config",
+        required=True,
+        help="Path to config file"
+    )
+    predict_job_parser.add_argument(
+        "--schema",
+        required=True,
+        help="Path to schema file"
+    )
+    predict_job_parser.add_argument(
+        "--pipeline",
+        choices=["default", "vanilla", "masking", "mutate", "mutate_and_mask"],
+        default="default",
+        help="Pipeline type ('vanilla' is an alias for 'default')"
+    )
+    predict_job_parser.add_argument(
+        "--conda-env",
+        type=str,
+        default="alphamask",
+        help="Conda environment name containing AlphaMask"
     )
     
     return parser
@@ -190,37 +225,41 @@ def setup_logging(debug: bool, log_file: str = None, quiet: bool = False):
 
 def main():
     """Main entry point for the CLI"""
-    parser = create_parser()
-    args = parser.parse_args()
-    
-    # Setup logging
-    setup_logging(args.debug, args.log_file, args.quiet)
-    
     try:
+        parser = create_parser()
+        args = parser.parse_args()
+        
+        # Setup logging based on command line arguments
+        setup_logging(
+            debug=args.debug,
+            log_file=args.log_file if hasattr(args, 'log_file') else None,
+            quiet=args.quiet if hasattr(args, 'quiet') else False
+        )
+        
+        logger.debug(f"Parsed arguments: {args}")
+        
         if args.command == "setup":
+            logger.debug("Running setup command")
             setup_cmd(args)
         elif args.command == "run":
-            run_cmd(args)
+            logger.debug("Running run command")
+            submit_jobs_cmd(args)
         elif args.command == "help":
             help_cmd(args)
         elif args.command == "predict":
-            from alphamask.experiments.config import process_configuration
-            from alphamask.experiments.predict import run_prediction_pipeline
-            
-            # Process configuration
-            config = process_configuration(args.config, args.schema)
-            
-            # Run prediction pipeline
-            run_prediction_pipeline(config, pipeline_type=args.pipeline)
+            logger.debug("Running predict command")
+            predict_cmd(args)
+        elif args.command == "predict-job":
+            logger.debug("Running predict-job command")
+            predict_job_cmd(args)
         else:
             parser.print_help()
             sys.exit(1)
     except Exception as e:
-        if not args.quiet:
-            logging.error(f"Command failed: {str(e)}")
-            if args.debug:
-                logging.exception("Detailed error trace:")
+        logger.error(f"Command failed: {str(e)}")
+        if args.debug:
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
         sys.exit(1)
 
 if __name__ == "__main__":
-    main() 
+    sys.exit(main()) 

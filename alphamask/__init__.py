@@ -1,10 +1,10 @@
-from alphamask.core.setup import SetupAlphaFoldColabDesign, ColabDesignUtils
-from alphamask.utils.experiment import MaskingExperiment
-from alphamask.utils import run_masking_experiment
+"""AlphaMask: A tool for protein masking analysis"""
 
-__all__ = [
-    "SetupAlphaFoldColabDesign",
-    "ColabDesignUtils",
-    "MaskingExperiment",
-    "run_masking_experiment"
-]
+from .utils.logging import logger
+
+# Import submodules
+from .experiments import *
+from .utils import *
+from .cli import *
+
+__version__ = "0.1.0"

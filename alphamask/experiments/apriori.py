@@ -47,29 +47,28 @@ class AprioriExperiment(BaseExperiment):
                         f"Invalid position {pos} in experiment {experiment.name}"
                     )
             
-            # Validate mutations
-            for mutation in experiment.mutations:
-                if not self._validate_mutation(mutation):
-                    raise ExperimentError(
-                        f"Invalid mutation {mutation} in experiment {experiment.name}"
-                    )
-            
-            # Validate conditions
-            if len(experiment.conditions) != 4:
-                raise ExperimentError(
-                    f"Experiment {experiment.name} must have exactly 4 conditions"
-                )
-            
+            # Validate mutations and conditions
+            has_mutations = bool(experiment.mutations)
             required_conditions = [
-                (False, False), (True, False),
-                (False, True), (True, True)
+                (False, False), (True, False), (False, True), (True, True)
+            ] if has_mutations else [
+                (False, False), (True, False), (False, True)
             ]
+            
+            if has_mutations:
+                for mutation in experiment.mutations:
+                    if not self._validate_mutation(mutation):
+                        raise ExperimentError(
+                            f"Invalid mutation {mutation} in experiment {experiment.name}"
+                        )
+            
             experiment_conditions = [
                 (c.mask, c.mutate) for c in experiment.conditions
             ]
             if sorted(experiment_conditions) != sorted(required_conditions):
                 raise ExperimentError(
-                    f"Experiment {experiment.name} missing required conditions"
+                    f"Experiment {experiment.name} requires exactly "
+                    f"{'4 conditions when mutations are specified' if has_mutations else '3 conditions when no mutations are specified'}"
                 )
     
     def _validate_mutation(self, mutation: str) -> bool:
@@ -90,27 +89,8 @@ class AprioriExperiment(BaseExperiment):
         return True
     
     def setup(self) -> None:
-        """Set up a priori masking experiments"""
-        # Add vanilla control
-        self.controls.append(Control(
-            name="vanilla",
-            protein_config=self.protein_config,
-            slurm_config=self.slurm_config,
-            conditions=[Condition(mask=False, mutate=False)],
-            working_dir=self.working_dir,
-            dry_run=self.dry_run
-        ))
-        
-        # Add experiment-specific controls
-        for experiment in self.experiments:
-            self.controls.append(Control(
-                name=f"experiment_{experiment.name}",
-                protein_config=self.protein_config,
-                slurm_config=self.slurm_config,
-                conditions=experiment.conditions,
-                working_dir=self.working_dir,
-                dry_run=self.dry_run
-            ))
+        """No separate setup needed as conditions are handled directly in run"""
+        pass
     
     def _create_config(self, experiment: AprioriConfig) -> ExperimentConfig:
         """Create configuration for a specific a priori experiment"""
@@ -124,20 +104,24 @@ class AprioriExperiment(BaseExperiment):
             num_recycles=self.defaults.get('num_recycles', 2),
             num_seeds=self.defaults.get('num_seeds', 2),
             setup_path=str(self.slurm_config.setup_path),
-            pipeline_type="mutate_and_mask"
+            pipeline_type="mutate_and_mask" if experiment.mutations else "mask_only"
         )
     
-    def run(self) -> bool:
-        """Run a priori masking experiments"""
+    def submit(self) -> bool:
+        """Submit a priori masking experiment jobs to SLURM
+        
+        This method validates the experiment configuration and submits jobs for each
+        experiment with their associated conditions. For each experiment, it:
+        1. Creates the experiment configuration
+        2. Sets up a SLURM job manager
+        3. Submits the jobs through the job manager
+        
+        Returns:
+            bool: True if all jobs were submitted successfully, False otherwise
+        """
         self.validate()
-        self.setup()
         
-        # Run controls first
-        for control in self.controls:
-            if not control.run():
-                return False
-        
-        # Run each experiment
+        # Submit each experiment with its conditions
         success = True
         for experiment in self.experiments:
             config = self._create_config(experiment)
@@ -150,7 +134,7 @@ class AprioriExperiment(BaseExperiment):
             
             exp_success, failed_jobs = job_manager.run_experiment()
             if not exp_success:
-                logger.error(f"Failed to run experiment {experiment.name}")
+                logger.error(f"Failed to submit experiment {experiment.name}")
                 success = False
         
         return success 

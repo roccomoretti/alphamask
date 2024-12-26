@@ -9,7 +9,7 @@ proteins:
         - ["T150A", "L157R"]
       mask_token: "X"
     apriori_masking:
-      enabled: true
+      enabled: false
       experiments:
         - name: "Abdullah_et_al_2023_T150A"
           positions: [150]
@@ -51,7 +51,7 @@ proteins:
         - ["L142S", "I146F"]
       mask_token: "X"
     apriori_masking:
-      enabled: true
+      enabled: false
       experiments:
         - name: "Freiberger_et_al_2023_L142K"
           positions: [142]
@@ -115,7 +115,7 @@ proteins:
     apriori_masking:
       enabled: true
       experiments:
-        - name: "Known_position_experiment"
+        - name: "kortemme_et_al_I89S"
           positions: [89]
           mutations: ["I89S"]
           conditions:
@@ -123,7 +123,7 @@ proteins:
             - {mask: true, mutate: false}
             - {mask: false, mutate: true}
             - {mask: true, mutate: true}
-        - name: "Known_position_experiment"
+        - name: "kortemme_et_al_I89N"
           positions: [89]
           mutations: ["I89N"]
           conditions:

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import sys
 from pathlib import Path
 
@@ -10,6 +9,7 @@ def print_help():
     print("  setup      Set up experiment directories")
     print("  run        Run experiments")
     print("  predict    Run individual predictions")
+    print("  predict-job Run predictions in SLURM job")
     print("  check-jax  Check JAX/CUDA installation")
     print("\nUsage:")
     print("  python -m alphamask <command> [options]")
@@ -32,11 +32,12 @@ def main():
         elif command == 'run':
             from alphamask.scripts.run_experiments import main as run_main
             run_main()
-        elif command == 'predict':
-            from predict import main as predict_main
-            predict_main()
+        elif command in ['predict', 'predict-job']:
+            from alphamask.cli.main import main as cli_main
+            sys.argv.insert(1, command)  # Put the command back for the CLI parser
+            cli_main()
         elif command == 'check-jax':
-            from check_jax import main as check_main
+            from alphamask.scripts.check_jax import main as check_main
             check_main()
         else:
             print(f"Unknown command: {command}")

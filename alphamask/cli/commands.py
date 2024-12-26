@@ -1,9 +1,14 @@
 """Command handlers for AlphaMask CLI"""
 
 import logging
+import traceback
 from pathlib import Path
 import os
 import textwrap
+import yaml
+
+# Configure logging first
+logger = logging.getLogger("alphamask.cli.commands")
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -16,9 +21,8 @@ from ..experiments.setup import ExperimentSetup
 from ..utils.slurm import SlurmJobConfig
 from ..experiments.runner import run_experiments
 from ..utils.config import load_config, validate_config
-from ..experiments.predict import run_prediction_pipeline
+from ..core.pipeline import DefaultPipeline, MaskingPipeline, MutatePipeline, MutateAndMaskingPipeline
 
-logger = logging.getLogger(__name__)
 console = Console()
 
 HELP_TEXTS = {
@@ -133,14 +137,33 @@ def show_summary(success: bool, title: str, details: dict):
     ))
 
 def setup_cmd(args):
-    """Handle setup command"""
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
-        task = progress.add_task("Setting up experiment directories...", total=None)
-        try:
+    """Set up experiment directories and resources.
+
+    This command initializes the directory structure and resources needed for running
+    AlphaMask experiments. It creates the necessary directories, copies configuration
+    files, and prepares the environment.
+
+    Args:
+        args: Namespace object from argparse containing:
+            - config (str): Path to protein configuration file
+            - path (str): Base path for experiment setup
+            - setup_path (str): Base path for setup files
+            - force (bool): Whether to force setup even if directories exist
+            - debug (bool): Enable debug logging
+            - quiet (bool): Disable logging output
+            - log_file (str, optional): Path to log file
+
+    Raises:
+        Exception: If setup fails for any reason (details in error message)
+    """
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Setting up experiment directories...", total=None)
+            
             setup = ExperimentSetup(
                 config_path=args.config,
                 setup_path=os.path.expanduser(args.setup_path),
@@ -148,6 +171,7 @@ def setup_cmd(args):
                 force=args.force
             )
             setup.setup()
+            
             progress.update(task, completed=True)
             
             show_summary(
@@ -160,39 +184,128 @@ def setup_cmd(args):
                     "Force Mode": "Yes" if args.force else "No"
                 }
             )
-        except Exception as e:
-            logger.error(f"Setup failed: {str(e)}")
-            show_summary(
-                success=False,
-                title="Setup Failed",
-                details={
-                    "Error": str(e),
-                    "Config File": args.config
-                }
-            )
-            raise
+    except Exception as e:
+        logger.error(f"Setup failed: {str(e)}\nTraceback:\n{traceback.format_exc()}")
+        show_summary(
+            success=False,
+            title="Setup Failed",
+            details={
+                "Error": str(e),
+                "Config File": args.config,
+                "Traceback": traceback.format_exc()
+            }
+        )
+        raise
 
-def run_cmd(args):
-    """Handle run command"""
+def predict_job_cmd(args):
+    """Run predictions within a SLURM job context.
+
+    This command is specifically designed to be executed within a SLURM job.
+    It handles the conda environment activation and runs the prediction pipeline
+    in the job context. This should not be called directly by users, but rather
+    is called by the job scheduler.
+
+    Args:
+        args: Namespace object from argparse containing:
+            - config (str): Path to configuration file
+            - schema (str): Path to JSON schema file
+            - pipeline (str): Pipeline type to use
+            - conda_env (str): Name of conda environment
+            - debug (bool): Enable debug logging
+            - quiet (bool): Disable logging output
+            - log_file (str, optional): Path to log file
+
+    Raises:
+        ValueError: If an invalid pipeline type is specified
+        RuntimeError: If the pipeline execution fails
+        Exception: For other errors during execution
+    """
+    try:
+        with Progress() as progress:
+            task = progress.add_task(
+                "[cyan]Running job prediction...",
+                total=None
+            )
+            
+            # Load and validate configuration
+            config = load_config(args.config)
+            validate_config(config, args.schema)
+            
+            # Get appropriate pipeline class
+            pipeline_map = {
+                "default": DefaultPipeline,  # Basic prediction without masking
+                "vanilla": DefaultPipeline,  # Alias for default
+                "masking": MaskingPipeline,  # Masking operations
+                "mutate": MutatePipeline,  # Mutation operations
+                "mutate_and_mask": MutateAndMaskingPipeline  # Combined mutation and masking
+            }
+            
+            if args.pipeline not in pipeline_map:
+                raise ValueError(f"Unknown pipeline type: {args.pipeline}. Valid choices are: {list(pipeline_map.keys())}")
+            
+            pipeline_class = pipeline_map[args.pipeline]
+            
+            # Initialize and run pipeline directly
+            logger.info(f"Running prediction pipeline: {args.pipeline}")
+            logger.info(f"Config: {yaml.dump(config, default_flow_style=False, indent=4)}")
+            
+            pipeline = pipeline_class(params=config)
+            result = pipeline.run()
+            
+            if not result.success:
+                raise RuntimeError(f"Pipeline failed: {result.error}")
+            
+            progress.update(task, completed=True)
+            console.print("[green]Job prediction completed successfully")
+            
+    except Exception as e:
+        console.print(f"[red]Error running job prediction: {str(e)}")
+        if args.debug:
+            console.print_exception()
+        raise
+
+def submit_jobs_cmd(args):
+    """Submit protein experiment jobs to the SLURM queue.
+
+    This command prepares and submits protein experiment jobs to the SLURM queue based on
+    the configuration file. It handles job configuration, submission to SLURM, and provides
+    a summary of the submission status. Can submit jobs for all proteins or specific ones.
+
+    Args:
+        args: Namespace object from argparse containing:
+            - config (str): Path to protein configuration file
+            - path (str, optional): Base path for experiments
+            - proteins (List[str], optional): Specific proteins to run
+            - container (str): Path to Singularity container
+            - schema (str): Path to JSON schema
+            - partition (str): SLURM partition
+            - gpu_type (str): GPU type to request
+            - force_local (bool): Force local execution
+            - debug (bool): Enable debug logging
+            - quiet (bool): Disable logging output
+            - log_file (str, optional): Path to log file
+
+    Raises:
+        RuntimeError: If any job submissions fail
+        Exception: For other errors during submission process
+    """
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console
     ) as progress:
-        task = progress.add_task("Running experiments...", total=None)
+        task = progress.add_task("Submitting jobs...", total=None)
         try:
-            # Convert script path to absolute path relative to current directory
-            script_path = Path(args.script)
-            if not script_path.is_absolute():
-                script_path = Path.cwd() / script_path
-            
-            # Create SLURM configuration
+            # Create SLURM configuration with alphamask predict-job command
             slurm_config = SlurmJobConfig(
                 container_path=args.container,
-                script_path=str(script_path),
+                script_path="alphamask predict-job",  # Just the command, environment setup will be in the job script
                 schema_path=args.schema,
                 partition=None if args.force_local else args.partition,
-                gpu_type=None if args.force_local else args.gpu_type
+                gpu_type=None if args.force_local else args.gpu_type,
+                setup_commands=[  # Add setup commands that will be included in the job script
+                    "conda activate alphamask"
+                ]
             )
             
             # Get base directory from the path where experiments were set up
@@ -210,11 +323,11 @@ def run_cmd(args):
             
             show_summary(
                 success=success,
-                title="Experiment Run Complete",
+                title="Job Submission Complete",
                 details={
                     "Config File": args.config,
                     "Container": args.container,
-                    "Script": str(script_path),
+                    "Command": "alphamask predict-job",
                     "Base Directory": str(base_dir),
                     "Partition": args.partition if not args.force_local else "Local",
                     "GPU Type": args.gpu_type if not args.force_local else "Local",
@@ -223,13 +336,13 @@ def run_cmd(args):
             )
             
             if not success:
-                raise RuntimeError("Some experiments failed")
+                raise RuntimeError("Some job submissions failed")
                 
         except Exception as e:
-            logger.error(f"Run failed: {str(e)}")
+            logger.error(f"Job submission failed: {str(e)}")
             show_summary(
                 success=False,
-                title="Run Failed",
+                title="Job Submission Failed",
                 details={
                     "Error": str(e),
                     "Config File": args.config
@@ -238,7 +351,32 @@ def run_cmd(args):
             raise
 
 def predict_cmd(args):
-    """Handle predict command"""
+    """Run direct predictions without using experiments or SLURM.
+
+    This command executes a single prediction pipeline directly, without the overhead
+    of experiment management or SLURM job scheduling. It's suitable for development,
+    testing, and simple predictions that don't require distributed execution.
+
+    The command supports different pipeline types:
+    - default/vanilla: Basic prediction without masking
+    - masking: Prediction with masking operations
+    - mutate: Prediction with mutations
+    - mutate_and_mask: Prediction with both mutations and masking
+
+    Args:
+        args: Namespace object from argparse containing:
+            - config (str): Path to configuration file
+            - schema (str): Path to JSON schema file
+            - pipeline (str): Pipeline type to use
+            - debug (bool): Enable debug logging
+            - quiet (bool): Disable logging output
+            - log_file (str, optional): Path to log file
+
+    Raises:
+        ValueError: If an invalid pipeline type is specified
+        RuntimeError: If the pipeline execution fails
+        Exception: For other errors during execution
+    """
     try:
         with Progress() as progress:
             task = progress.add_task(
@@ -250,12 +388,31 @@ def predict_cmd(args):
             config = load_config(args.config)
             validate_config(config, args.schema)
             
-            # Run prediction pipeline
-            run_prediction_pipeline(config, pipeline_type=args.pipeline)
+            # Get appropriate pipeline class
+            pipeline_map = {
+                "default": DefaultPipeline,  # Basic prediction without masking
+                "masking": MaskingPipeline,  # Masking operations
+                "mutate": MutatePipeline,  # Mutation operations
+                "mutate_and_mask": MutateAndMaskingPipeline  # Combined mutation and masking
+            }
+            
+            if args.pipeline not in pipeline_map:
+                raise ValueError(f"Unknown pipeline type: {args.pipeline}. Valid choices are: {list(pipeline_map.keys())}")
+            
+            pipeline_class = pipeline_map[args.pipeline]
+            
+            # Initialize and run pipeline directly
+            logger.info(f"Running prediction pipeline: {args.pipeline}")
+            logger.info(f"Config: {yaml.dump(config, default_flow_style=False, indent=4)}")
+            
+            pipeline = pipeline_class(params=config)
+            result = pipeline.run()
+            
+            if not result.success:
+                raise RuntimeError(f"Pipeline failed: {result.error}")
             
             progress.update(task, completed=True)
-            
-        console.print("[green]Prediction completed successfully")
+            console.print("[green]Prediction completed successfully")
             
     except Exception as e:
         console.print(f"[red]Error running prediction: {str(e)}")
@@ -264,7 +421,20 @@ def predict_cmd(args):
         raise
 
 def help_cmd(args):
-    """Handle help command"""
+    """Display help information for AlphaMask commands.
+
+    This command shows detailed help information about AlphaMask commands
+    and configuration. It can display general help or specific help for
+    a particular topic.
+
+    Args:
+        args: Namespace object from argparse containing:
+            - topic (str, optional): Specific topic to get help on
+                Choices: ["setup", "run", "config"]
+            - debug (bool): Enable debug logging
+            - quiet (bool): Disable logging output
+            - log_file (str, optional): Path to log file
+    """
     if args.topic:
         if args.topic in HELP_TEXTS:
             console.print(Markdown(textwrap.dedent(HELP_TEXTS[args.topic])))

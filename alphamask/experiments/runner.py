@@ -2,16 +2,18 @@ from typing import Optional, Dict, Type
 from pathlib import Path
 import logging
 
-from ..utils.slurm import SlurmJobConfig
-from .config import process_configuration, MaskingConfiguration
 from .base import (
     BaseExperiment,
     IterativeExperiment,
     AprioriExperiment,
     FrustraExperiment
 )
+from .types import ValidationError
+from .config import process_configuration
+from ..utils.slurm import SlurmJobConfig
 
-logger = logging.getLogger(__name__)
+# Get logger for this module
+logger = logging.getLogger("alphamask.experiments.runner")
 
 class ExperimentRunner:
     """
@@ -25,9 +27,17 @@ class ExperimentRunner:
         slurm_config: Optional[SlurmJobConfig] = None,
         base_dir: Optional[Path] = None
     ):
-        self.config = process_configuration(config_path)
-        self.slurm_config = slurm_config or SlurmJobConfig()
-        self.base_dir = Path(base_dir) if base_dir else Path.cwd()
+        # Convert config_path to absolute path
+        config_path = Path(config_path).resolve()
+        self.config = process_configuration(str(config_path))
+
+        if slurm_config is None:
+            slurm_config = SlurmJobConfig()
+        # Ensure schema_path is absolute
+        schema_path = Path(self.config.schema_path).resolve()
+        slurm_config.schema_path = str(schema_path)
+        self.slurm_config = slurm_config
+        self.base_dir = Path(base_dir).resolve() if base_dir else Path.cwd().resolve()
         
         # Map of experiment types to their implementations
         self.experiment_types: Dict[str, Type[BaseExperiment]] = {
@@ -44,6 +54,10 @@ class ExperimentRunner:
         protein_config = self.config.proteins[protein_id]
         experiments = []
         working_dir = self.base_dir / protein_id
+        schema_path = Path(self.config.schema_path)
+        
+        if not schema_path.exists():
+            raise ValueError(f"Schema file not found: {schema_path}")
         
         # Create iterative masking experiment if enabled
         if protein_config.iterative_masking.enabled:
@@ -51,7 +65,8 @@ class ExperimentRunner:
                 IterativeExperiment(
                     protein_config,
                     self.slurm_config,
-                    working_dir / "iterative"
+                    working_dir / "iterative",
+                    schema_path=schema_path
                 )
             )
         
@@ -61,7 +76,8 @@ class ExperimentRunner:
                 AprioriExperiment(
                     protein_config,
                     self.slurm_config,
-                    working_dir / "apriori"
+                    working_dir / "apriori",
+                    schema_path=schema_path
                 )
             )
         
@@ -71,15 +87,26 @@ class ExperimentRunner:
                 FrustraExperiment(
                     protein_config,
                     self.slurm_config,
-                    working_dir / "frustra"
+                    working_dir / "frustra",
+                    schema_path=schema_path
                 )
             )
         
         return experiments
     
     def run_protein_experiments(self, protein_id: str) -> bool:
-        """Run all enabled experiments for a protein"""
+        """Submit all enabled experiments for a protein to SLURM"""
         try:
+            # Validate schema path before creating experiments
+            if not hasattr(self.config, 'schema_path') or not self.config.schema_path:
+                raise ValueError("Schema path not found in configuration")
+            
+            schema_path = Path(self.config.schema_path)
+            if not schema_path.exists():
+                raise ValueError(f"Schema file not found: {schema_path}")
+            if not schema_path.is_file():
+                raise ValueError(f"Schema path is not a file: {schema_path}")
+
             experiments = self.create_experiments(protein_id)
             
             if not experiments:
@@ -88,15 +115,15 @@ class ExperimentRunner:
             
             success = True
             for experiment in experiments:
-                logger.info(f"Running {experiment.name} for {protein_id}")
-                if not experiment.run():
-                    logger.error(f"Failed to run {experiment.name} for {protein_id}")
+                logger.info(f"Submitting {experiment.name} for {protein_id}")
+                if not experiment.submit():
+                    logger.error(f"Failed to submit {experiment.name} for {protein_id}")
                     success = False
             
             return success
             
         except Exception as e:
-            logger.error(f"Error running experiments for {protein_id}: {str(e)}")
+            logger.error(f"Error submitting experiments for {protein_id}: {str(e)}")
             return False
     
     def run_all_experiments(self) -> bool:

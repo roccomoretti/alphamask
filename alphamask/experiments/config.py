@@ -3,12 +3,17 @@ import yaml
 from typing import Dict, Any, Tuple
 import logging
 from dataclasses import asdict
+import os
+import json
 
 from .types import (
     ValidationError, LogLevel, Condition, AprioriExperiment,
     IterativeMasking, AprioriMasking, FrustraMasking,
     LoggingConfig, GlobalSettings, ProteinConfig, MaskingConfiguration
 )
+
+# Get logger for this module
+logger = logging.getLogger("alphamask.experiments.config")
 
 def load_yaml_config(file_path: str) -> Dict[str, Any]:
     """
@@ -65,6 +70,7 @@ def create_protein_config_from_dict(data: Dict[str, Any]) -> ProteinConfig:
 def create_config_from_dict(data: Dict[str, Any]) -> MaskingConfiguration:
     """Convert dictionary to MaskingConfiguration object with validation"""
     return MaskingConfiguration(
+        schema_path=data['schema_path'],
         proteins={
             protein_id: create_protein_config_from_dict(protein_data)
             for protein_id, protein_data in data['proteins'].items()
@@ -125,12 +131,14 @@ def validate_configuration(config: MaskingConfiguration) -> Tuple[bool, str]:
         return False, f"Validation error: {str(e)}"
 
 def process_configuration(file_path: str) -> MaskingConfiguration:
-    """
-    Main function to load, validate, and process a masking configuration file.
-    Returns a validated MaskingConfiguration object ready for use.
-    """
-    # Load YAML file
+    """Main function to load, validate, and process a masking configuration file."""
     yaml_data = load_yaml_config(file_path)
+    
+    # Add schema path to configuration if not present
+    if 'schema_path' not in yaml_data:
+        schema_path = Path(__file__).parent.parent / "config" / "schema_validation.json"
+        yaml_data['schema_path'] = str(schema_path.resolve())
+        logger.info(f"Using default schema path: {yaml_data['schema_path']}")
     
     # Create configuration object
     try:

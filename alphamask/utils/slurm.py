@@ -10,11 +10,11 @@ from enum import Enum
 import logging
 from datetime import datetime
 
-from .logging import setup_logger
 from .types import ExperimentConfig, MaskingStrategy
 from .params import load_defaults
 
-logger = setup_logger()
+# Get logger for this module
+logger = logging.getLogger("alphamask.utils.slurm")
 
 # Load defaults at module level
 DEFAULTS = load_defaults()
@@ -40,11 +40,15 @@ class SlurmJobConfig:
     script_path: str = ""
     schema_path: str = ""
     setup_path: Optional[str] = None
+    setup_commands: List[str] = None
 
     def __post_init__(self):
         """Set default setup base path and validate GPU configuration"""
         if self.setup_path is None:
             self.setup_path = os.path.expanduser("~/alphamask_setup")
+        
+        if self.setup_commands is None:
+            self.setup_commands = []
         
         # Validate GPU configuration based on partition
         if self.partition == "clara":
@@ -57,6 +61,15 @@ class SlurmJobConfig:
             if self.gpu_type not in valid_gpus:
                 logger.warning(f"GPU type {self.gpu_type} not available on partition {self.partition}. Using a30.")
                 self.gpu_type = "a30"
+        
+        if not self.schema_path:
+            raise ValueError("Schema path must be provided in SlurmJobConfig")
+        schema_path = Path(self.schema_path)
+        if not schema_path.exists():
+            raise ValueError(f"Schema file not found: {schema_path}")
+        if not schema_path.is_file():
+            raise ValueError(f"Schema path is not a file: {schema_path}")
+        self.schema_path = str(schema_path.resolve())
 
     def get_gpu_constraint(self) -> str:
         """Get the correct GPU constraint string based on partition and GPU type"""
@@ -110,8 +123,7 @@ class SlurmJobManager:
     ):
         self.experiment_config = experiment_config
         self.slurm_config = slurm_config
-        # Resolve working directory to absolute path
-        self.working_dir = Path(working_dir if working_dir else ".").resolve()
+        self.working_dir = Path(working_dir).resolve() if working_dir else Path.cwd().resolve()
         self.jobs: Dict[int, SlurmJob] = {}
         self.failed_jobs: List[int] = []
         self.has_slurm = self._check_slurm_available()
@@ -120,7 +132,10 @@ class SlurmJobManager:
         self.experiment_config.setup_path = self.slurm_config.setup_path
         
         # Store schema path
-        self.schema_path = self.slurm_config.schema_path
+        schema_path = Path(self.slurm_config.schema_path)
+        if not schema_path.is_absolute():
+            schema_path = schema_path.resolve()
+        self.schema_path = schema_path
         
         if not self.has_slurm:
             logger.warning("SLURM not detected - jobs will run sequentially")
@@ -161,7 +176,6 @@ class SlurmJobManager:
             # Convert all paths to absolute paths
             config_path = str(Path(config_path).resolve())
             container_path = str(Path(self.slurm_config.container_path).resolve())
-            script_path = str(Path(self.slurm_config.script_path).resolve())
             working_dir = str(Path(self.working_dir).resolve())
             
             # Create script path
@@ -184,30 +198,22 @@ class SlurmJobManager:
                 dir_path.mkdir(parents=True, exist_ok=True)
                 logger.info(f"Ensuring directory exists: {dir_path}")
             
-            # Get local schema path and ensure schema directory exists
+            # Copy schema file to local directory
             schema_dir = Path(self.working_dir) / "schema"
+            schema_dir.mkdir(parents=True, exist_ok=True)
             local_schema_path = schema_dir / "schema_validation.json"
             
-            # Copy schema file if it exists
-            if Path(self.schema_path).exists():
+            # Ensure source schema exists and is readable
+            if not self.schema_path.exists():
+                raise FileNotFoundError(f"Schema file not found: {self.schema_path}")
+            if not os.access(self.schema_path, os.R_OK):
+                raise PermissionError(f"Cannot read schema file: {self.schema_path}")
+            
+            try:
                 shutil.copy2(self.schema_path, local_schema_path)
                 logger.info(f"Copied schema from {self.schema_path} to {local_schema_path}")
-            else:
-                logger.warning(f"Schema file not found at {self.schema_path}")
-                local_schema_path.touch()
-                logger.info(f"Created empty schema file at {local_schema_path}")
-
-            # Verify required files exist
-            required_files = {
-                "Container": container_path,
-                "Script": script_path,
-                "Config": config_path
-            }
-            
-            for name, path in required_files.items():
-                if not Path(path).exists():
-                    raise FileNotFoundError(f"{name} not found at {path}")
-                logger.info(f"Verified {name} exists at {path}")
+            except (shutil.Error, IOError) as e:
+                raise RuntimeError(f"Failed to copy schema file: {e}")
 
             # Create script content with absolute paths
             script_content = f"""#!/bin/bash
@@ -220,18 +226,41 @@ class SlurmJobManager:
 #SBATCH --partition={self.slurm_config.partition}
 #SBATCH --gres=gpu:{self.slurm_config.gpu_type}:1
 
-# Load required modules if needed
+# Load required modules and initialize conda
+module load Anaconda3
+eval "$(conda shell.bash hook)"
+source ~/.bashrc
+
+# Check if conda environment exists
+if ! conda env list | grep -q "alphamask"; then
+    echo "Error: conda environment 'alphamask' not found"
+    echo "Available environments:"
+    conda env list
+    exit 1
+fi
+
+# Environment setup
+{chr(10).join(self.slurm_config.setup_commands)}
+
+# Add conda environment to PATH
+CONDA_BASE=$(conda info --base)
+CONDA_ENV_PATH="/home/sc.uni-leipzig.de/$USER/.conda/envs/alphamask"
+export PATH="$CONDA_ENV_PATH/bin:$PATH"
+
+# Print environment info
+echo "Python path:"
+which python
+echo "Conda info:"
+conda info
+echo "PATH:"
+echo $PATH
+echo "Conda environment path:"
+echo $CONDA_ENV_PATH
 
 # Print paths for debugging
 echo "Working directory: {working_dir}"
 echo "Config path: {config_path}"
-echo "Script path: {script_path}"
 echo "Schema path: {local_schema_path}"
-
-# Create required directories
-mkdir -p {working_dir}/in/msa
-mkdir -p {working_dir}/out/pdbs
-mkdir -p {working_dir}/schema
 
 cd {working_dir}
 
@@ -239,14 +268,14 @@ cd {working_dir}
 echo "Listing working directory contents:"
 ls -la
 echo "Listing input directory contents:"
-ls -la in/
+ls -la in/ || echo "Input directory is empty"
 echo "Checking MSA file:"
-ls -la in/msa.a3m || echo "MSA file not found"
+ls -la in/msa.a3m 2>/dev/null || echo "MSA file not found (this is normal if not using custom MSA)"
 echo "Checking parent directories:"
 ls -la ..
 echo "Current directory structure:"
 pwd
-find . -type f -name "msa.a3m"
+find . -type f -name "msa.a3m" || echo "No MSA files found"
 
 # Verify paths exist
 if [ ! -f "{config_path}" ]; then
@@ -261,11 +290,6 @@ fi
 
 if [ ! -f "{container_path}" ]; then
     echo "Error: Container not found at {container_path}"
-    exit 1
-fi
-
-if [ ! -f "{script_path}" ]; then
-    echo "Error: Script not found at {script_path}"
     exit 1
 fi
 
@@ -307,14 +331,28 @@ if [ "{getattr(self.experiment_config, 'msa_method', 'mmseqs2')}" = "custom_a3m"
     echo "MSA file is ready"
 fi
 
-# Run the prediction script using singularity
-singularity exec --nv --cleanenv \\
-    -B /work:/work \\
-    -B {working_dir}:{working_dir} \\
-    {container_path} \\
-    python {script_path} \\
-    --yaml_file {config_path} \\
-    --json_schema {local_schema_path} \\
+# Check if conda environment exists before binding
+if [ ! -d "$CONDA_ENV_PATH" ]; then
+    echo "Error: Conda environment directory not found at $CONDA_ENV_PATH"
+    echo "Current conda environments:"
+    conda env list
+    exit 1
+fi
+
+# Run the command using singularity
+echo "Running command: {self.slurm_config.script_path} --config {config_path} --schema {local_schema_path} --pipeline {self.experiment_config.pipeline_type or 'default'}"
+
+# Export the conda environment path inside the container
+echo "Using container's built-in environment..."
+
+singularity exec --nv \
+    -B /work:/work \
+    -B {working_dir}:{working_dir} \
+    -B /home/sc.uni-leipzig.de/$USER/github/alphamask:/opt/alphamask \
+    {container_path} \
+    ~/.conda/envs/alphamask/bin/python -m alphamask predict-job \
+    --config {config_path} \
+    --schema {local_schema_path} \
     --pipeline {self.experiment_config.pipeline_type or "default"}
 """
             
@@ -621,6 +659,7 @@ singularity exec --nv --cleanenv \\
             # For no masking, just submit a single job with default settings
             config = self.experiment_config.to_dict()
             config["pipeline_type"] = "default"  # Use default pipeline for no masking
+            config["schema_path"] = str(self.schema_path)  # Add schema path to config
             
             config_path = self.working_dir / "configs" / "config_no_masking.yaml"
             with open(config_path, 'w') as f:
