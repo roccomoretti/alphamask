@@ -80,10 +80,6 @@ class ExperimentSetup:
                     (protein_dir / "iterative").mkdir(parents=True, exist_ok=True)
                     (protein_dir / "iterative" / "controls").mkdir(parents=True, exist_ok=True)
                 
-                if protein_config.apriori_masking.enabled:
-                    (protein_dir / "apriori").mkdir(parents=True, exist_ok=True)
-                    (protein_dir / "apriori" / "controls").mkdir(parents=True, exist_ok=True)
-                
                 if protein_config.frustra_masking.enabled:
                     (protein_dir / "frustra").mkdir(parents=True, exist_ok=True)
                     (protein_dir / "frustra" / "controls").mkdir(parents=True, exist_ok=True)

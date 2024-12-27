@@ -104,7 +104,7 @@ class AprioriExperiment(BaseExperiment):
             num_recycles=self.defaults.get('num_recycles', 2),
             num_seeds=self.defaults.get('num_seeds', 2),
             setup_path=str(self.slurm_config.setup_path),
-            pipeline_type="mutate_and_mask" if experiment.mutations else "mask_only"
+            pipeline_type="mutate_and_mask" if experiment.mutations else "masking"
         )
     
     def submit(self) -> bool:

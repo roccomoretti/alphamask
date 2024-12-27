@@ -156,11 +156,11 @@ class SlurmJobManager:
         self.log_dir = self.working_dir / "logs"
         
         # Log directory structure
-        logger.info(f"Created directory structure:")
-        logger.info(f"Working directory: {self.working_dir}")
-        logger.info(f"Config directory: {self.config_dir}")
-        logger.info(f"Script directory: {self.script_dir}")
-        logger.info(f"Log directory: {self.log_dir}")
+        logger.debug(f"Created directory structure:")
+        logger.debug(f"Working directory: {self.working_dir}")
+        logger.debug(f"Config directory: {self.config_dir}")
+        logger.debug(f"Script directory: {self.script_dir}")
+        logger.debug(f"Log directory: {self.log_dir}")
 
     def create_job_script(self, config_path: str, job_name: str) -> str:
         """Create a SLURM job script for the given configuration.
@@ -195,7 +195,7 @@ class SlurmJobManager:
             
             try:
                 shutil.copy2(self.schema_path, local_schema_path)
-                logger.info(f"Copied schema from {self.schema_path} to {local_schema_path}")
+                logger.debug(f"Copied schema from {self.schema_path} to {local_schema_path}")
             except (shutil.Error, IOError) as e:
                 raise RuntimeError(f"Failed to copy schema file: {e}")
 
@@ -357,9 +357,9 @@ singularity exec --nv \
             Path(script_path_abs).chmod(0o755)
             
             # Log script creation
-            logger.info(f"Created job script at: {script_path_abs}")
-            logger.info(f"Generated SLURM script for {job_name}:")
-            logger.info(script_content)
+            logger.debug(f"Created job script at: {script_path_abs}")
+            logger.debug(f"Generated SLURM script for {job_name}:")
+            # logger.debug(script_content)
             
             return script_path_abs
             
@@ -371,8 +371,8 @@ singularity exec --nv \
         """Submit a job either to SLURM or run it directly"""
         try:
             # Log input parameters
-            logger.info(f"Submitting job with script_path: {script_path}, job_name: {job_name}")
-            logger.info(f"Working directory: {self.working_dir}")
+            logger.debug(f"Submitting job with script_path: {script_path}, job_name: {job_name}")
+            logger.debug(f"Working directory: {self.working_dir}")
             
             # Get config path from script name
             config_name = job_name.replace("vanilla_control", "control")
@@ -387,85 +387,97 @@ singularity exec --nv \
             
             # Check if we need to wait for MSA
             if self.experiment_config.msa_method == "mmseqs2":
-                # For apriori experiments, use MSA from unmasked_unmutated run
+                # For apriori experiments, use MSA from protein base directory
                 if "apriori" in str(self.working_dir):
-                    # Get the experiment name (e.g., "Abdullah_et_al_2023_T150A")
-                    experiment_name = Path(self.working_dir).parent.name
+                    # Get the protein base directory (e.g., /work/.../my_experiments/her2)
+                    protein_dir = Path(self.working_dir).parent.parent
                     
-                    # Construct path to unmasked_unmutated job directory
-                    unmasked_path = (
-                        Path(self.working_dir).parent  # Go up to experiment level
-                        / "unmasked_unmutated"  # Go to unmasked_unmutated
-                        / f"{self.experiment_config.jobname_prefix}"  # Go to job directory
-                    )
+                    # Create shared MSA directory at protein level
+                    shared_msa_dir = protein_dir / "in" / "msa"
+                    shared_msa_dir.mkdir(parents=True, exist_ok=True)
                     
-                    # Point to the MSA directory inside the job directory
-                    msa_dir = unmasked_path / "in" 
-                    logger.info(f"Using MSA directory from unmasked run: {msa_dir}")
-                else:
-                    # For non-apriori experiments, use controls directory
-                    experiment_dir = Path(self.working_dir).parent.parent
-                    msa_dir = experiment_dir / "controls" / "msa"
-                
-                msa_file = msa_dir / "msa.a3m"
-                flag_file = msa_dir / ".msa_in_progress"
-
-                # Make sure the MSA directory exists
-                if not msa_dir.exists():
-                    msa_dir.mkdir(parents=True, exist_ok=True)
-                    logger.info(f"Created MSA directory at: {msa_dir}")
-                else:
-                    logger.info(f"MSA directory already exists: {msa_dir}")
-
-                # If MSA already exists, just use it as custom_a3m
-                if msa_file.exists():
-                    logger.info(f"MSA file exists at {msa_file}, using it directly.")
-                    self.experiment_config.msa_method = "custom_a3m"
-                    self.experiment_config.custom_a3m_path = str(msa_file)
-                # Otherwise, check if another job is already generating it
-                elif flag_file.exists():
-                    logger.info("Waiting for MSA generation to complete...")
-                    wait_start = time.time()
-                    timeout = 3600  # 1 hour timeout
+                    # Define MSA and flag file paths
+                    msa_file = shared_msa_dir / "msa.a3m"
+                    flag_file = shared_msa_dir / ".msa_in_progress"
                     
-                    while flag_file.exists():
-                        if msa_file.exists():
-                            # MSA exists, we can remove the flag and proceed
-                            try:
-                                flag_file.unlink()
-                                logger.info("MSA found and flag file removed.")
-                                break
-                            except Exception as e:
-                                logger.warning(f"Could not remove flag file: {e}")
-                        
-                        # Check timeout
-                        if time.time() - wait_start > timeout:
-                            logger.error("Timeout waiting for MSA generation")
-                            raise TimeoutError("MSA generation timed out")
-                        
-                        time.sleep(10)
-                    
-                    if not msa_file.exists():
-                        raise FileNotFoundError("MSA file not found after waiting")
-                    
-                    logger.info("MSA generation completed.")
-                    # Now that it's done, switch to custom_a3m
-                    self.experiment_config.msa_method = "custom_a3m"
-                    self.experiment_config.custom_a3m_path = str(msa_file)
-                # No file yet and no flag, so THIS job will generate the MSA
-                else:
-                    flag_file.touch()
-                    logger.info(f"Created MSA in-progress flag at {flag_file}")
-                    self.experiment_config.msa_method = "mmseqs2"
-                    self.experiment_config.msa_output_path = str(msa_file)
+                    if msa_file.exists():
+                        logger.debug(f"MSA file exists at {msa_file}, using it directly.")
+                        self.experiment_config.msa_method = "custom_a3m"
+                        self.experiment_config.custom_a3m_path = str(msa_file)
+                    else:
+                        # Wait for MSA if another job is generating it
+                        if flag_file.exists():
+                            logger.debug("Waiting for MSA generation to complete...")
+                            wait_start = time.time()
+                            timeout = 3600  # 1 hour timeout
+                            
+                            while flag_file.exists():
+                                if msa_file.exists():
+                                    try:
+                                        flag_file.unlink()
+                                        logger.debug("MSA found and flag file removed.")
+                                        break
+                                    except Exception as e:
+                                        logger.warning(f"Could not remove flag file: {e}")
+                                
+                                if time.time() - wait_start > timeout:
+                                    raise TimeoutError("MSA generation timed out")
+                                
+                                time.sleep(10)
+                            
+                            if not msa_file.exists():
+                                raise FileNotFoundError("MSA file not found after waiting")
+                            
+                            logger.debug("MSA generation completed.")
+                            self.experiment_config.msa_method = "custom_a3m"
+                            self.experiment_config.custom_a3m_path = str(msa_file)
+                        else:
+                            # This job will generate the MSA
+                            flag_file.touch()
+                            logger.debug(f"Created MSA in-progress flag at {flag_file}")
+                            
+                            # Initialize PrepInputs for MSA generation
+                            from alphamask.core.msa import PrepInputs
+                            prep_inputs = PrepInputs(
+                                sequence=self.experiment_config.sequence,
+                                jobname="msa",  # Use generic name to avoid job-specific directories
+                                msa_method="mmseqs2",
+                                setup_path=self.slurm_config.setup_path,
+                                parent_path=shared_msa_dir,  # Use shared MSA dir directly
+                                overwrite=False
+                            )
+                            
+                            # Process sequence and generate MSA
+                            prep_inputs.process_sequence()
+                            
+                            # Get the actual jobname with hash that PrepInputs generated
+                            msa_jobname = prep_inputs.jobname  # This will be something like "msa_hash_0"
+                            logger.debug(f"Using MSA jobname: {msa_jobname}")
+                            
+                            prep_inputs.get_msa()
+                            
+                            # Find and move the generated MSA using the actual jobname
+                            generated_msa = shared_msa_dir / msa_jobname / "in" / "msa.a3m"
+                            if generated_msa.exists():
+                                shutil.copy2(generated_msa, msa_file)
+                                logger.debug(f"Copied MSA from {generated_msa} to {msa_file}")
+                                # Clean up temporary directory
+                                shutil.rmtree(generated_msa.parent.parent, ignore_errors=True)
+                            else:
+                                logger.error(f"Generated MSA not found at expected path: {generated_msa}")
+                                raise FileNotFoundError(f"MSA file not found at {generated_msa}")
+                            
+                            # Update experiment config to use the shared MSA
+                            self.experiment_config.msa_method = "custom_a3m"
+                            self.experiment_config.custom_a3m_path = str(msa_file)
 
             # Save experiment config
             self.experiment_config.save(config_path)
-            logger.info(f"Saved config to: {config_path}")
+            logger.debug(f"Saved config to: {config_path}")
 
             # Create the job script
             script_path = self.create_job_script(str(config_path), job_name)
-            logger.info(f"Created job script at: {script_path}")
+            logger.debug(f"Created job script at: {script_path}")
 
             if self.has_slurm:
                 # Submit to SLURM
@@ -485,17 +497,17 @@ singularity exec --nv \
         try:
             # Check if sbatch exists and get its path
             sbatch_path = shutil.which('sbatch')
-            logger.info(f"sbatch command path: {sbatch_path}")
+            logger.debug(f"sbatch command path: {sbatch_path}")
             
             # Ensure script directory exists
             script_dir = Path(script_path).parent
-            logger.info(f"Ensuring script directory exists: {script_dir}")
+            logger.debug(f"Ensuring script directory exists: {script_dir}")
             script_dir.mkdir(parents=True, exist_ok=True)
             
             # Log file existence and permissions
-            logger.info(f"Script path exists: {Path(script_path).exists()}")
+            logger.debug(f"Script path exists: {Path(script_path).exists()}")
             if Path(script_path).exists():
-                logger.info(f"Script permissions: {oct(Path(script_path).stat().st_mode)}")
+                logger.debug(f"Script permissions: {oct(Path(script_path).stat().st_mode)}")
             
             # Check if working directory exists before changing to it
             if not Path(self.working_dir).exists():
@@ -509,17 +521,17 @@ singularity exec --nv \
                 original_dir = "/tmp"
                 logger.warning(f"Current directory not accessible, using fallback: {original_dir}")
             
-            logger.info(f"Current directory before cd: {original_dir}")
+            logger.debug(f"Current directory before cd: {original_dir}")
             os.chdir(str(self.working_dir))
-            logger.info(f"Changed to working directory: {os.getcwd()}")
+            logger.debug(f"Changed to working directory: {os.getcwd()}")
             
             # Log environment PATH
-            logger.info(f"PATH environment variable: {os.environ.get('PATH', 'Not found')}")
+            logger.debug(f"PATH environment variable: {os.environ.get('PATH', 'Not found')}")
             
             # Submit job
             cmd = f"sbatch {script_path}"
-            logger.info(f"Submitting SLURM job with command: {cmd}")
-            logger.info(f"Full script path: {os.path.abspath(script_path)}")
+            logger.debug(f"Submitting SLURM job with command: {cmd}")
+            logger.debug(f"Full script path: {os.path.abspath(script_path)}")
             
             # Try to execute sbatch directly with full path if available
             if sbatch_path:
@@ -537,13 +549,13 @@ singularity exec --nv \
             if result.returncode == 0:
                 # Parse job ID from output
                 job_id = int(result.stdout.strip().split()[-1])
-                logger.info(f"Successfully submitted job {job_id}")
+                logger.debug(f"Successfully submitted job {job_id}")
                 
                 # Log SLURM partition status
                 # try:
                 #     sinfo_result = subprocess.run(["sinfo"], capture_output=True, text=True)
-                #     logger.info("Current SLURM partition status:")
-                #     logger.info(sinfo_result.stdout)
+                #     logger.debug("Current SLURM partition status:")
+                #     logger.debug(sinfo_result.stdout)
                 # except Exception as e:
                 #     logger.warning(f"Could not get SLURM partition status: {e}")
                 
@@ -563,7 +575,7 @@ singularity exec --nv \
     def _run_job_locally(self, script_path: str) -> Optional[int]:
         """Run job locally using bash"""
         try:
-            logger.info(f"Running job locally")
+            logger.debug(f"Running job locally")
             
             # Change to working directory
             original_dir = os.getcwd()
@@ -571,7 +583,7 @@ singularity exec --nv \
             
             # Run the script
             cmd = f"bash {script_path}"
-            logger.info(f"Running command: {cmd}")
+            logger.debug(f"Running command: {cmd}")
             result = subprocess.run(cmd.split(), capture_output=True, text=True)
             
             # Change back to original directory
@@ -579,7 +591,7 @@ singularity exec --nv \
             
             # Check result
             if result.returncode == 0:
-                logger.info("Successfully completed local job")
+                logger.debug("Successfully completed local job")
                 return 0  # Return 0 as pseudo job ID for local runs
             else:
                 logger.error(f"Failed to run job locally")
@@ -672,9 +684,9 @@ singularity exec --nv \
         
         # Create necessary directories
         msa_dir = Path(self.working_dir) / "in" / "msa"
-        pdb_dir = Path(self.working_dir) / "out" / "pdbs"
+        # pdb_dir = Path(self.working_dir) / "out" / "pdbs"
         msa_dir.mkdir(parents=True, exist_ok=True)
-        pdb_dir.mkdir(parents=True, exist_ok=True)
+        # pdb_dir.mkdir(parents=True, exist_ok=True)
         
         # Save masking config
         config_path = Path(self.working_dir) / "configs" / f"config_masked_{masking_config.jobname_prefix}.yaml"
@@ -683,15 +695,15 @@ singularity exec --nv \
         with open(config_path, 'w') as f:
             yaml.dump(masking_config.to_dict(), f)
         
-        logger.info(f"Created masking config at: {config_path}")
-        logger.info(f"Using model parameters from: {masking_config.get_setup_path() / 'params'}")
-        logger.info(f"Created MSA directory at: {msa_dir}")
-        logger.info(f"Created PDB directory at: {pdb_dir}")
+        logger.debug(f"Created masking config at: {config_path}")
+        logger.debug(f"Using model parameters from: {masking_config.get_setup_path() / 'params'}")
+        logger.debug(f"Created MSA directory at: {msa_dir}")
+        # logger.debug(f"Created PDB directory at: {pdb_dir}")
         
         # Submit job
         job_id = self.submit_job(str(config_path), masking_config.jobname)
         if job_id:
-            logger.info(f"Submitted masking job with ID {job_id}")
+            logger.debug(f"Submitted masking job with ID {job_id}")
             job_ids.append(job_id)
         
         return job_ids
@@ -723,13 +735,13 @@ singularity exec --nv \
         with open(config_path, 'w') as f:
             yaml.dump(config_dict, f)
         
-        logger.info(f"Created control config at: {config_path}")
-        logger.info(f"Using model parameters from: {control_config.get_setup_path() / 'params'}")
+        logger.debug(f"Created control config at: {config_path}")
+        logger.debug(f"Using model parameters from: {control_config.get_setup_path() / 'params'}")
         
         # Submit job
         job_id = self.submit_job(str(config_path), control_config.jobname)
         if job_id:
-            logger.info(f"Submitted control job with ID {job_id}")
+            logger.debug(f"Submitted control job with ID {job_id}")
             return job_id
         return None
 

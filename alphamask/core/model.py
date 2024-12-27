@@ -315,6 +315,7 @@ class RunAlphaFold:
         base = f"{self.jobname}_{model}_r{recycle}_seed_{str(seed).zfill(3)}"
         
         if self.mask_msa:
+            # Handle masking case (with or without mutations)
             if self.masking_mode == "list":
                 cols_str = (
                     str(self.cols[0])
@@ -324,6 +325,9 @@ class RunAlphaFold:
                 if self.mutations:
                     cols_str += "_mut_" + "_".join(self.mutations)
                 return f"{base}_mask_{cols_str}_id_{self.mask_identity}.pdb"
+        elif hasattr(self, 'mutations') and self.mutations:
+            # Handle mutation-only case
+            return f"{base}_mut_" + "_".join(self.mutations) + ".pdb"
         
         return f"{base}.pdb"
 
@@ -401,6 +405,7 @@ class RunAlphaFold:
         
         # Generate base name
         if self.mask_msa:
+            # Handle masking case (with or without mutations)
             if self.masking_mode == "list":
                 # Format masked positions
                 if hasattr(self, 'cols') and self.cols:
@@ -439,6 +444,9 @@ class RunAlphaFold:
                 base_name = f"{self.jobname}_mask_{cols_str}_id_{self.mask_identity}"
             else:
                 raise NotImplementedError("The masking_mode 'range' is not fully implemented yet.")
+        elif hasattr(self, 'mutations') and self.mutations:
+            # Handle mutation-only case
+            base_name = f"{self.jobname}_mut_" + "_".join(self.mutations)
         else:
             base_name = f"{self.jobname}"
 

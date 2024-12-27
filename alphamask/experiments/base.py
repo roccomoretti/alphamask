@@ -106,7 +106,7 @@ class Control:
         self.script_dir = self.working_dir / "scripts"
         self.log_dir = self.working_dir / "logs"
         self.input_dir = self.working_dir / "in"
-        self.output_dir = self.working_dir / "out"
+        # self.output_dir = self.working_dir / "out"
         self.schema_dir = self.working_dir / "schema"
         
         if not self.dry_run:
@@ -118,8 +118,8 @@ class Control:
                 self.log_dir,
                 self.input_dir,
                 self.input_dir / "msa",
-                self.output_dir,
-                self.output_dir / "pdbs",
+                # self.output_dir,
+                # self.output_dir / "pdbs",
                 self.schema_dir
             ]:
                 dir_path.mkdir(parents=True, exist_ok=True)
@@ -133,8 +133,8 @@ class Control:
                 self.log_dir,
                 self.input_dir,
                 self.input_dir / "msa",
-                self.output_dir,
-                self.output_dir / "pdbs",
+                # self.output_dir,
+                # self.output_dir / "pdbs",
                 self.schema_dir
             ]:
                 logger.info(f"[DRY RUN] Would create directory: {dir_path}")
@@ -378,41 +378,52 @@ class AprioriExperiment(BaseExperiment):
         seq_hash = predict.get_hash(self.protein_config.sequence)[:5]
         jobname = f"{experiment.name}_{seq_hash}"
         
-        return ExperimentConfig(
+        # Set masking strategy based on condition
+        masking_strategy = MaskingStrategy.MASK_POSITIONS if condition.mask else MaskingStrategy.NONE
+        
+        # Set pipeline type based on condition
+        if condition.mask and condition.mutate:
+            pipeline_type = "mutate_and_mask"
+        elif condition.mask:
+            pipeline_type = "masking"
+        elif condition.mutate:
+            pipeline_type = "mutate"
+        else:
+            pipeline_type = "default"
+        
+        # Set positions and mutations based on condition
+        positions = experiment.positions if condition.mask else []
+        mutations = experiment.mutations if condition.mutate else []
+        
+        # Create config with proper masking settings
+        config = ExperimentConfig(
             sequence=self.protein_config.sequence,
             jobname_prefix=jobname,
             parent_path=str(self.working_dir / experiment.name / condition_name),
-            masking_strategy=MaskingStrategy.MASK_POSITIONS if condition.mask else MaskingStrategy.NONE,
-            positions=experiment.positions if condition.mask else [],
-            mutations=experiment.mutations if condition.mutate else [],
+            masking_strategy=masking_strategy,
+            positions=positions,
+            mutations=mutations,
             num_recycles=self.defaults.get('num_recycles', 2),
             num_seeds=self.defaults.get('num_seeds', 2),
             setup_path=str(self.slurm_config.setup_path),
-            pipeline_type="mutate_and_mask" if condition.mutate and condition.mask else 
-                         "mask_only" if condition.mask else
-                         "mutate" if condition.mutate else
-                         "default",
-            create_control=False
+            pipeline_type=pipeline_type,
+            create_control=False,  # Never create controls in condition directories
+            # Add masking-specific settings
+            mask_msa=condition.mask,
+            masking_mode="on" if condition.mask else "off",
+            mask_identity="X"
         )
+        
+        return config
     
     def submit(self) -> bool:
-        """Submit a priori masking experiment jobs to SLURM
-        
-        This method validates the experiment configuration and submits jobs for each
-        experiment with their associated conditions. For each experiment, it:
-        1. Creates the experiment configuration for each condition
-        2. Sets up a SLURM job manager
-        3. Submits the jobs through the job manager
-        
-        Returns:
-            bool: True if all jobs were submitted successfully, False otherwise
-        """
+        """Submit a priori masking experiment jobs to SLURM"""
         self.validate()
         
         # Submit each experiment with its conditions
         success = True
         for experiment in self.experiments:
-            # Create a job for each condition
+            # Submit condition-specific jobs
             for condition in experiment.conditions:
                 config = self._create_config(experiment, condition)
                 
