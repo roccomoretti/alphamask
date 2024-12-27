@@ -182,22 +182,6 @@ class SlurmJobManager:
             script_path_obj = Path(self.script_dir) / f"{job_name}.sh"
             script_path_abs = str(script_path_obj.resolve())
             
-            # Ensure all required directories exist
-            for dir_path in [
-                self.working_dir,
-                self.config_dir,
-                self.script_dir,
-                self.log_dir,
-                Path(self.working_dir) / "in",
-                Path(self.working_dir) / "in" / "msa",
-                Path(self.working_dir) / "out",
-                Path(self.working_dir) / "out" / "pdbs",
-                Path(self.working_dir) / "schema"
-            ]:
-                dir_path = Path(dir_path)
-                dir_path.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Ensuring directory exists: {dir_path}")
-            
             # Copy schema file to local directory
             schema_dir = Path(self.working_dir) / "schema"
             schema_dir.mkdir(parents=True, exist_ok=True)
@@ -322,13 +306,22 @@ wait_for_file() {{
 }}
 
 # If this is a masking job and using custom MSA, wait for the MSA file
-if [ "{getattr(self.experiment_config, 'msa_method', 'mmseqs2')}" = "custom_a3m" ] && [ -n "{getattr(self.experiment_config, 'custom_a3m_path', '')}" ]; then
+if [ "{self.experiment_config.msa_method}" = "custom_a3m" ] && [ -n "{getattr(self.experiment_config, 'custom_a3m_path', '')}" ]; then
     echo "Waiting for MSA file to be fully written: {getattr(self.experiment_config, 'custom_a3m_path', '')}"
     if ! wait_for_file "{getattr(self.experiment_config, 'custom_a3m_path', '')}"; then
         echo "Error: Failed to get MSA file"
         exit 1
     fi
     echo "MSA file is ready"
+    
+    # Remove the in-progress flag if we're using a shared MSA
+    if [ -f "{getattr(self.experiment_config, 'custom_a3m_path', '')}" ]; then
+        flag_file="{Path(getattr(self.experiment_config, 'custom_a3m_path', '')).parent / '.msa_in_progress'}"
+        if [ -f "$flag_file" ]; then
+            rm -f "$flag_file"
+            echo "Removed MSA in-progress flag"
+        fi
+    fi
 fi
 
 # Check if conda environment exists before binding
@@ -374,19 +367,106 @@ singularity exec --nv \
             logger.error(f"Error creating job script: {str(e)}")
             raise
 
-    def submit_job(self, config_path: str, job_name: str) -> Optional[int]:
+    def submit_job(self, script_path: str, job_name: str) -> Optional[int]:
         """Submit a job either to SLURM or run it directly"""
         try:
             # Log input parameters
-            logger.info(f"Submitting job with config_path: {config_path}, job_name: {job_name}")
+            logger.info(f"Submitting job with script_path: {script_path}, job_name: {job_name}")
             logger.info(f"Working directory: {self.working_dir}")
-            logger.info(f"Config file exists: {Path(config_path).exists()}")
             
-            # Create the job script first
-            script_path = self.create_job_script(config_path, job_name)
+            # Get config path from script name
+            config_name = job_name.replace("vanilla_control", "control")
+            if "masked" in job_name:
+                config_name = f"config_masked_{self.experiment_config.jobname_prefix}.yaml"
+            elif "no_masking" in job_name:
+                config_name = "config_no_masking.yaml"
+            else:
+                config_name = "config_control.yaml"
+            
+            config_path = Path(self.working_dir) / "configs" / config_name
+            
+            # Check if we need to wait for MSA
+            if self.experiment_config.msa_method == "mmseqs2":
+                # For apriori experiments, use MSA from unmasked_unmutated run
+                if "apriori" in str(self.working_dir):
+                    # Get the experiment name (e.g., "Abdullah_et_al_2023_T150A")
+                    experiment_name = Path(self.working_dir).parent.name
+                    
+                    # Construct path to unmasked_unmutated job directory
+                    unmasked_path = (
+                        Path(self.working_dir).parent  # Go up to experiment level
+                        / "unmasked_unmutated"  # Go to unmasked_unmutated
+                        / f"{self.experiment_config.jobname_prefix}"  # Go to job directory
+                    )
+                    
+                    # Point to the MSA directory inside the job directory
+                    msa_dir = unmasked_path / "in" 
+                    logger.info(f"Using MSA directory from unmasked run: {msa_dir}")
+                else:
+                    # For non-apriori experiments, use controls directory
+                    experiment_dir = Path(self.working_dir).parent.parent
+                    msa_dir = experiment_dir / "controls" / "msa"
+                
+                msa_file = msa_dir / "msa.a3m"
+                flag_file = msa_dir / ".msa_in_progress"
+
+                # Make sure the MSA directory exists
+                if not msa_dir.exists():
+                    msa_dir.mkdir(parents=True, exist_ok=True)
+                    logger.info(f"Created MSA directory at: {msa_dir}")
+                else:
+                    logger.info(f"MSA directory already exists: {msa_dir}")
+
+                # If MSA already exists, just use it as custom_a3m
+                if msa_file.exists():
+                    logger.info(f"MSA file exists at {msa_file}, using it directly.")
+                    self.experiment_config.msa_method = "custom_a3m"
+                    self.experiment_config.custom_a3m_path = str(msa_file)
+                # Otherwise, check if another job is already generating it
+                elif flag_file.exists():
+                    logger.info("Waiting for MSA generation to complete...")
+                    wait_start = time.time()
+                    timeout = 3600  # 1 hour timeout
+                    
+                    while flag_file.exists():
+                        if msa_file.exists():
+                            # MSA exists, we can remove the flag and proceed
+                            try:
+                                flag_file.unlink()
+                                logger.info("MSA found and flag file removed.")
+                                break
+                            except Exception as e:
+                                logger.warning(f"Could not remove flag file: {e}")
+                        
+                        # Check timeout
+                        if time.time() - wait_start > timeout:
+                            logger.error("Timeout waiting for MSA generation")
+                            raise TimeoutError("MSA generation timed out")
+                        
+                        time.sleep(10)
+                    
+                    if not msa_file.exists():
+                        raise FileNotFoundError("MSA file not found after waiting")
+                    
+                    logger.info("MSA generation completed.")
+                    # Now that it's done, switch to custom_a3m
+                    self.experiment_config.msa_method = "custom_a3m"
+                    self.experiment_config.custom_a3m_path = str(msa_file)
+                # No file yet and no flag, so THIS job will generate the MSA
+                else:
+                    flag_file.touch()
+                    logger.info(f"Created MSA in-progress flag at {flag_file}")
+                    self.experiment_config.msa_method = "mmseqs2"
+                    self.experiment_config.msa_output_path = str(msa_file)
+
+            # Save experiment config
+            self.experiment_config.save(config_path)
+            logger.info(f"Saved config to: {config_path}")
+
+            # Create the job script
+            script_path = self.create_job_script(str(config_path), job_name)
             logger.info(f"Created job script at: {script_path}")
-            logger.info(f"Job script exists: {Path(script_path).exists()}")
-            
+
             if self.has_slurm:
                 # Submit to SLURM
                 return self._submit_slurm_job(script_path)
@@ -776,41 +856,73 @@ singularity exec --nv \
             shutil.which('sacct') is not None
         )
 
-    def run_experiment(self) -> Tuple[bool, Optional[List[Dict]]]:
-        """
-        Run the complete experiment workflow
+    def run_experiment(self) -> Tuple[bool, List[str]]:
+        """Run the experiment jobs"""
+        if not self.experiment_config.create_control:
+            # Skip control job creation for apriori experiments
+            return self._submit_jobs()
+        else:
+            # Create both control and main jobs
+            return self._submit_with_controls()
+    
+    def _submit_jobs(self) -> Tuple[bool, List[str]]:
+        """Submit only the main experiment jobs without controls"""
+        # Create job scripts
+        job_scripts = self._create_job_scripts(is_control=False)
+        
+        # Submit jobs
+        failed_jobs = []
+        for script in job_scripts:
+            if not self.submit_job(script, self.experiment_config.jobname_prefix):  # Use existing submit_job method
+                failed_jobs.append(script)
+        
+        return len(failed_jobs) == 0, failed_jobs
+    
+    def _submit_with_controls(self) -> Tuple[bool, List[str]]:
+        """Submit both control and main experiment jobs
         
         Returns:
-            Tuple[bool, Optional[List[Dict]]]: (success, failed_jobs_info)
+            Tuple of (success, list of failed job scripts)
         """
-        if self.has_slurm:
-            # Submit control job if needed
-            if self.experiment_config.run_control or self.experiment_config.run_only_control:
-                control_job_id = self.submit_control_job()
-                if control_job_id is None:
-                    logger.error("Failed to submit control job")
-                    return False, None
+        failed_jobs = []
+        
+        # Submit control job first
+        control_scripts = self._create_job_scripts(is_control=True)
+        for script in control_scripts:
+            if not self.submit_job(script, f"{self.experiment_config.jobname_prefix}_control"):  # Use existing submit_job method
+                failed_jobs.append(script)
+        
+        # Submit main jobs
+        main_scripts = self._create_job_scripts(is_control=False)
+        for script in main_scripts:
+            if not self.submit_job(script, self.experiment_config.jobname_prefix):  # Use existing submit_job method
+                failed_jobs.append(script)
+        
+        return len(failed_jobs) == 0, failed_jobs
+
+    def _create_job_scripts(self, is_control: bool = False) -> List[str]:
+        """Create SLURM job scripts
+        
+        Args:
+            is_control: Whether this is a control job
             
-            # Submit masking jobs if not running only control
-            if not self.experiment_config.run_only_control:
-                job_ids = self.submit_masking_jobs()
-                if not job_ids:
-                    logger.error("Failed to submit masking jobs")
-                    return False, None
-            
-            # Monitor all jobs
-            success = self.monitor_jobs()
-            failed_jobs_info = self.get_failed_jobs_info() if not success else None
-            
-            return success, failed_jobs_info
-        else:
-            # For local runs, execute directly
-            try:
-                job_id = self.submit_job(
-                    str(self.working_dir / "config.yaml"),
-                    self.experiment_config.jobname_prefix
-                )
-                return job_id is not None, None
-            except Exception as e:
-                logger.error(f"Error running experiment locally: {e}")
-                return False, [{"error": str(e)}]
+        Returns:
+            List of paths to created job scripts
+        """
+        # Create config file
+        configs_dir = Path(self.working_dir) / "configs"
+        configs_dir.mkdir(parents=True, exist_ok=True)
+        
+        config_name = "config_control.yaml" if is_control else f"config_{'masked' if self.experiment_config.masking_strategy != MaskingStrategy.NONE else 'no_masking'}.yaml"
+        config_path = configs_dir / config_name
+        
+        # Save experiment config
+        self.experiment_config.save(config_path)
+        
+        # Create job name
+        job_name = f"{self.experiment_config.jobname_prefix}_{'vanilla_control' if is_control else 'masked' if self.experiment_config.masking_strategy != MaskingStrategy.NONE else 'no_masking'}"
+        
+        # Use existing create_job_script method
+        script_path = self.create_job_script(str(config_path), job_name)
+        
+        return [script_path]

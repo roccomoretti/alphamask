@@ -1,6 +1,6 @@
 """Types module for AlphaMask"""
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import List, Optional, Callable, Any, TypedDict, Dict, Union
 from enum import Enum
 from pathlib import Path
@@ -70,6 +70,7 @@ class ExperimentConfig:
     debug: bool = None
     pipeline_type: str = None
     callback_fn: Optional[Callable[[Any, Optional[str]], None]] = None
+    create_control: bool = True
     
     def __post_init__(self):
         """Load defaults after initialization."""

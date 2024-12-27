@@ -13,3 +13,4 @@ notebooks/out/*
 my_experiments/*
 logs/prediction.log
 submit_debug.sh
+alphamask/her2-msa.a3m

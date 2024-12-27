@@ -7,6 +7,7 @@ import logging
 from ..utils.slurm import SlurmJobManager, SlurmJobConfig
 from ..utils.types import ExperimentConfig, MaskingStrategy
 from ..utils.params import load_defaults
+from colabdesign.af.contrib import predict
 
 from .types import (
     ProteinConfig, Condition, AprioriExperiment,
@@ -39,11 +40,9 @@ class BaseExperiment(ABC):
         self.dry_run = dry_run
         self.schema_path = schema_path.resolve() if schema_path else None
         
-        # Create the main working directory
-        if not self.dry_run:
-            self.working_dir.mkdir(parents=True, exist_ok=True) 
-        else:
-            logger.info(f"[DRY RUN] Would create directory: {self.working_dir}")
+        # Only create the working directory if it's needed
+        if not self.dry_run and isinstance(self, (IterativeExperiment, FrustraExperiment)):
+            self.working_dir.mkdir(parents=True, exist_ok=True)
         
         # Load default parameters
         self.defaults = load_defaults()
@@ -372,10 +371,17 @@ class AprioriExperiment(BaseExperiment):
     
     def _create_config(self, experiment: AprioriExperiment, condition: Condition) -> ExperimentConfig:
         """Create configuration for a specific a priori experiment condition"""
+        # Create descriptive name for this condition
+        condition_name = f"{'masked' if condition.mask else 'unmasked'}_{'mutated' if condition.mutate else 'unmutated'}"
+        
+        # Get hash for the sequence
+        seq_hash = predict.get_hash(self.protein_config.sequence)[:5]
+        jobname = f"{experiment.name}_{seq_hash}"
+        
         return ExperimentConfig(
             sequence=self.protein_config.sequence,
-            jobname_prefix=f"{self.name}_{experiment.name}",
-            parent_path=str(self.working_dir / experiment.name),
+            jobname_prefix=jobname,
+            parent_path=str(self.working_dir / experiment.name / condition_name),
             masking_strategy=MaskingStrategy.MASK_POSITIONS if condition.mask else MaskingStrategy.NONE,
             positions=experiment.positions if condition.mask else [],
             mutations=experiment.mutations if condition.mutate else [],
@@ -385,7 +391,8 @@ class AprioriExperiment(BaseExperiment):
             pipeline_type="mutate_and_mask" if condition.mutate and condition.mask else 
                          "mask_only" if condition.mask else
                          "mutate" if condition.mutate else
-                         "default"
+                         "default",
+            create_control=False
         )
     
     def submit(self) -> bool:
@@ -410,7 +417,7 @@ class AprioriExperiment(BaseExperiment):
                 config = self._create_config(experiment, condition)
                 
                 # Create descriptive name for this condition
-                condition_name = f"{experiment.name}_{'masked' if condition.mask else 'unmasked'}_{'mutated' if condition.mutate else 'unmutated'}"
+                condition_name = f"{'masked' if condition.mask else 'unmasked'}_{'mutated' if condition.mutate else 'unmutated'}"
                 working_dir = self.working_dir / experiment.name / condition_name
                 
                 job_manager = SlurmJobManager(
@@ -421,7 +428,7 @@ class AprioriExperiment(BaseExperiment):
                 
                 exp_success, failed_jobs = job_manager.run_experiment()
                 if not exp_success:
-                    logger.error(f"Failed to submit experiment {condition_name}")
+                    logger.error(f"Failed to submit experiment {experiment.name} condition {condition_name}")
                     success = False
         
         return success
