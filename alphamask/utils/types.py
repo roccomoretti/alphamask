@@ -6,6 +6,7 @@ from enum import Enum
 from pathlib import Path
 import os
 import yaml
+import warnings
 
 class AlphaFoldAuxData(TypedDict, total=False):
     """Type definition for AlphaFold auxiliary data"""
@@ -34,8 +35,23 @@ def snake_to_camel(snake_str: str) -> str:
     components = snake_str.split('_')
     return components[0] + ''.join(x.title() for x in components[1:])
 
+# Note: MaskingStrategy enum is kept for backward compatibility but marked as deprecated
 class MaskingStrategy(str, Enum):
-    """Enum for masking strategies"""
+    """
+    DEPRECATED: This enum is deprecated and will be removed in a future version.
+    The masking behavior is now determined by the experiment type and pipeline type.
+    """
+    def __new__(cls, value):
+        warnings.warn(
+            "MaskingStrategy is deprecated and will be removed in a future version. "
+            "The masking behavior is now determined by the experiment type and pipeline type.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        obj = str.__new__(cls, value)
+        obj._value_ = value
+        return obj
+
     NONE = "none"
     ITERATIVE_SINGLE = "iterative_single"
     ITERATIVE_SINGLE_MASK_MUTATE = "iterative_single_mask_mutate"
@@ -50,7 +66,6 @@ class ExperimentConfig:
     sequence: str
     jobname_prefix: str
     parent_path: str
-    masking_strategy: MaskingStrategy
     
     # Optional fields - defaults will be loaded from defaults.yaml
     masking_mode: str = None
@@ -71,7 +86,7 @@ class ExperimentConfig:
     pipeline_type: str = None
     callback_fn: Optional[Callable[[Any, Optional[str]], None]] = None
     create_control: bool = True
-    
+    cols: Optional[List[int]] = None
     def __post_init__(self):
         """Load defaults after initialization."""
         from .params import load_defaults
@@ -89,7 +104,6 @@ class ExperimentConfig:
             sequence=self.sequence,
             jobname_prefix=self.jobname_prefix,
             parent_path=self.parent_path,
-            masking_strategy=self.masking_strategy,
             masking_mode=self.masking_mode,
             mask_msa=self.mask_msa,
             mask_deletion_matrix=self.mask_deletion_matrix,
@@ -124,8 +138,6 @@ class ExperimentConfig:
         from .params import load_defaults
         
         d = asdict(self)
-        # Convert Enum to string
-        d['masking_strategy'] = self.masking_strategy.value
         # Remove callback function as it's not serializable
         d.pop('callback_fn', None)
         

@@ -5,7 +5,7 @@ from pathlib import Path
 import logging
 
 from ..utils.slurm import SlurmJobManager, SlurmJobConfig
-from ..utils.types import ExperimentConfig, MaskingStrategy
+from ..utils.types import ExperimentConfig
 from ..utils.params import load_defaults
 from colabdesign.af.contrib import predict
 
@@ -165,7 +165,6 @@ class Control:
             sequence=self.protein_config.sequence,
             jobname_prefix=condition_name,
             parent_path=str(self.working_dir),
-            masking_strategy=MaskingStrategy.MASK_POSITIONS if condition.mask else MaskingStrategy.NONE,
             positions=experiment_positions if condition.mask else [],
             mutations=mutations,
             num_recycles=self.defaults.get('num_recycles', 2),
@@ -184,7 +183,6 @@ class Control:
             logger.info(f"[DRY RUN] Would create config file at: {config_path}")
             logger.info(f"[DRY RUN] Config contents would be:")
             logger.info(f"[DRY RUN] - Sequence: {config.sequence[:20]}...")
-            logger.info(f"[DRY RUN] - Masking strategy: {config.masking_strategy}")
             logger.info(f"[DRY RUN] - Positions to mask: {config.positions}")
             logger.info(f"[DRY RUN] - Mutations: {config.mutations}")
             logger.info(f"[DRY RUN] - Pipeline type: {config.pipeline_type}")
@@ -293,7 +291,6 @@ class IterativeExperiment(BaseExperiment):
             "sequence": self.protein_config.sequence,
             "jobname_prefix": f"{self.name}",
             "parent_path": str(self.working_dir),
-            "masking_strategy": MaskingStrategy.ITERATIVE_SINGLE,
             "num_recycles": self.defaults.get('num_recycles', 2),
             "num_seeds": self.defaults.get('num_seeds', 2),
             "setup_path": str(self.slurm_config.setup_path),
@@ -378,9 +375,6 @@ class AprioriExperiment(BaseExperiment):
         seq_hash = predict.get_hash(self.protein_config.sequence)[:5]
         jobname = f"{experiment.name}_{seq_hash}"
         
-        # Set masking strategy based on condition
-        masking_strategy = MaskingStrategy.MASK_POSITIONS if condition.mask else MaskingStrategy.NONE
-        
         # Set pipeline type based on condition
         if condition.mask and condition.mutate:
             pipeline_type = "mutate_and_mask"
@@ -398,51 +392,66 @@ class AprioriExperiment(BaseExperiment):
         # Create config with proper masking settings
         config = ExperimentConfig(
             sequence=self.protein_config.sequence,
-            jobname_prefix=jobname,
+            jobname_prefix=jobname,  # Use consistent jobname format
             parent_path=str(self.working_dir / experiment.name / condition_name),
-            masking_strategy=masking_strategy,
             positions=positions,
+            cols=positions,
             mutations=mutations,
             num_recycles=self.defaults.get('num_recycles', 2),
             num_seeds=self.defaults.get('num_seeds', 2),
             setup_path=str(self.slurm_config.setup_path),
             pipeline_type=pipeline_type,
             create_control=False,  # Never create controls in condition directories
-            # Add masking-specific settings
             mask_msa=condition.mask,
-            masking_mode="on" if condition.mask else "off",
+            mask_deletion_matrix=condition.mask,
+            masking_mode="list" if condition.mask else "off",
             mask_identity="X"
         )
         
         return config
     
     def submit(self) -> bool:
-        """Submit a priori masking experiment jobs to SLURM"""
-        self.validate()
+        """Orchestrate the experiment submission process
         
-        # Submit each experiment with its conditions
-        success = True
-        for experiment in self.experiments:
-            # Submit condition-specific jobs
-            for condition in experiment.conditions:
-                config = self._create_config(experiment, condition)
-                
-                # Create descriptive name for this condition
-                condition_name = f"{'masked' if condition.mask else 'unmasked'}_{'mutated' if condition.mutate else 'unmutated'}"
-                working_dir = self.working_dir / experiment.name / condition_name
-                
-                job_manager = SlurmJobManager(
-                    experiment_config=config,
-                    slurm_config=self.slurm_config,
-                    working_dir=str(working_dir)
-                )
-                
-                exp_success, failed_jobs = job_manager.run_experiment()
-                if not exp_success:
-                    logger.error(f"Failed to submit experiment {experiment.name} condition {condition_name}")
-                    success = False
+        This method:
+        1. Validates the experiment configuration
+        2. Creates configs for each condition
+        3. Uses SlurmJobManager to submit jobs
         
-        return success
+        Returns:
+            bool: True if all jobs were submitted successfully
+        """
+        try:
+            self.validate()
+            
+            # Submit each experiment with its conditions
+            success = True
+            for experiment in self.experiments:
+                for condition in experiment.conditions:
+                    # Create experiment configuration for this condition
+                    config = self._create_config(experiment, condition)
+                    
+                    # Create working directory for this condition
+                    condition_dir = self.working_dir / experiment.name / f"{'masked' if condition.mask else 'unmasked'}_{'mutated' if condition.mutate else 'unmutated'}"
+                    
+                    # Initialize SLURM job manager for this condition
+                    job_manager = SlurmJobManager(
+                        experiment_config=config,
+                        slurm_config=self.slurm_config,
+                        working_dir=str(condition_dir)
+                    )
+                    
+                    # Let SlurmJobManager handle the actual job submission
+                    exp_success, failed_jobs = job_manager.run_experiment()
+                    if not exp_success:
+                        logger.error(f"Failed to submit experiment {experiment.name} condition {condition}")
+                        success = False
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error in experiment submission: {str(e)}")
+            return False
 
     def _validate_mutation(self, mutation: str) -> bool:
         """Validate a single mutation against the protein sequence"""
@@ -511,11 +520,10 @@ class FrustraExperiment(BaseExperiment):
             "sequence": self.protein_config.sequence,
             "jobname_prefix": f"{self.name}",
             "parent_path": str(self.working_dir),
-            "masking_strategy": MaskingStrategy.MASK_POSITIONS,
             "num_recycles": self.defaults.get('num_recycles', 2),
             "num_seeds": self.defaults.get('num_seeds', 2),
             "setup_path": str(self.slurm_config.setup_path),
-            "pipeline_type": "frustra",
+            "pipeline_type": "masking",
             "top_positions": self.protein_config.frustra_masking.top_positions
         }
         

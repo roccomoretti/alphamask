@@ -10,7 +10,7 @@ from enum import Enum
 import logging
 from datetime import datetime
 
-from .types import ExperimentConfig, MaskingStrategy
+from .types import ExperimentConfig
 from .params import load_defaults
 
 # Get logger for this module
@@ -746,9 +746,9 @@ singularity exec --nv \
         return None
 
     def submit_masking_jobs(self) -> List[int]:
-        """Submit jobs based on masking strategy"""
-        if self.experiment_config.masking_strategy == MaskingStrategy.NONE:
-            # For no masking, just submit a single job with default settings
+        """Submit jobs based on pipeline type"""
+        # For no masking, just submit a single job with default settings
+        if self.experiment_config.pipeline_type == "default":
             config = self.experiment_config.to_dict()
             config["pipeline_type"] = "default"  # Use default pipeline for no masking
             config["schema_path"] = str(self.schema_path)  # Add schema path to config
@@ -763,12 +763,12 @@ singularity exec --nv \
             )
             return [job_id] if job_id else []
             
-        elif self.experiment_config.masking_strategy == MaskingStrategy.ITERATIVE_SINGLE:
+        elif self.experiment_config.pipeline_type == "masking":
             return self.submit_iterative_masking_jobs()
-        elif self.experiment_config.masking_strategy == MaskingStrategy.ITERATIVE_SINGLE_MASK_MUTATE:
+        elif self.experiment_config.pipeline_type == "mutate":
             return self.submit_iterative_mask_mutate_jobs()
-        elif self.experiment_config.masking_strategy == MaskingStrategy.MUTATE_AND_MASK:
-            # For MUTATE_AND_MASK, we submit a single job with the mutations and masking
+        elif self.experiment_config.pipeline_type == "mutate_and_mask":
+            # For mutate_and_mask, we submit a single job with the mutations and masking
             config = self.experiment_config.to_dict()
             config["pipeline_type"] = "mutate_and_mask"  # Ensure correct pipeline type
             
@@ -781,11 +781,8 @@ singularity exec --nv \
                 f"{self.experiment_config.jobname_prefix}_mutate_and_mask"
             )
             return [job_id] if job_id else []
-        
-        elif self.experiment_config.masking_strategy in [MaskingStrategy.MASK_POSITIONS, MaskingStrategy.UNMASK_POSITIONS]:
-            return self.submit_position_masking_jobs()
         else:
-            raise ValueError(f"Unsupported masking strategy: {self.experiment_config.masking_strategy}")
+            raise ValueError(f"Unsupported pipeline type: {self.experiment_config.pipeline_type}")
 
     def monitor_jobs(self, check_interval: int = 60) -> bool:
         """Monitor jobs until completion"""
@@ -869,72 +866,46 @@ singularity exec --nv \
         )
 
     def run_experiment(self) -> Tuple[bool, List[str]]:
-        """Run the experiment jobs"""
-        if not self.experiment_config.create_control:
-            # Skip control job creation for apriori experiments
-            return self._submit_jobs()
-        else:
-            # Create both control and main jobs
-            return self._submit_with_controls()
-    
-    def _submit_jobs(self) -> Tuple[bool, List[str]]:
-        """Submit only the main experiment jobs without controls"""
-        # Create job scripts
-        job_scripts = self._create_job_scripts(is_control=False)
+        """Handle the SLURM-specific aspects of job submission
         
-        # Submit jobs
-        failed_jobs = []
-        for script in job_scripts:
-            if not self.submit_job(script, self.experiment_config.jobname_prefix):  # Use existing submit_job method
-                failed_jobs.append(script)
-        
-        return len(failed_jobs) == 0, failed_jobs
-    
-    def _submit_with_controls(self) -> Tuple[bool, List[str]]:
-        """Submit both control and main experiment jobs
+        This method:
+        1. Creates/uses config files
+        2. Creates job scripts
+        3. Submits to SLURM
         
         Returns:
-            Tuple of (success, list of failed job scripts)
+            Tuple[bool, List[str]]: Success status and list of failed jobs
         """
-        failed_jobs = []
-        
-        # Submit control job first
-        control_scripts = self._create_job_scripts(is_control=True)
-        for script in control_scripts:
-            if not self.submit_job(script, f"{self.experiment_config.jobname_prefix}_control"):  # Use existing submit_job method
-                failed_jobs.append(script)
-        
-        # Submit main jobs
-        main_scripts = self._create_job_scripts(is_control=False)
-        for script in main_scripts:
-            if not self.submit_job(script, self.experiment_config.jobname_prefix):  # Use existing submit_job method
-                failed_jobs.append(script)
-        
-        return len(failed_jobs) == 0, failed_jobs
-
-    def _create_job_scripts(self, is_control: bool = False) -> List[str]:
-        """Create SLURM job scripts
-        
-        Args:
-            is_control: Whether this is a control job
+        try:
+            # Create descriptive name for this job
+            if self.experiment_config.pipeline_type == "default":
+                job_name = f"{self.experiment_config.jobname_prefix}_no_masking"
+            else:
+                job_name = f"{self.experiment_config.jobname_prefix}"
             
-        Returns:
-            List of paths to created job scripts
-        """
-        # Create config file
-        configs_dir = Path(self.working_dir) / "configs"
-        configs_dir.mkdir(parents=True, exist_ok=True)
-        
-        config_name = "config_control.yaml" if is_control else f"config_{'masked' if self.experiment_config.masking_strategy != MaskingStrategy.NONE else 'no_masking'}.yaml"
-        config_path = configs_dir / config_name
-        
-        # Save experiment config
-        self.experiment_config.save(config_path)
-        
-        # Create job name
-        job_name = f"{self.experiment_config.jobname_prefix}_{'vanilla_control' if is_control else 'masked' if self.experiment_config.masking_strategy != MaskingStrategy.NONE else 'no_masking'}"
-        
-        # Use existing create_job_script method
-        script_path = self.create_job_script(str(config_path), job_name)
-        
-        return [script_path]
+            # Use the config file if it already exists, otherwise create it
+            configs_dir = Path(self.working_dir) / "configs"
+            configs_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Look for existing config file with experiment prefix
+            existing_configs = list(configs_dir.glob(f"config_{self.experiment_config.jobname_prefix}*.yaml"))
+            
+            if existing_configs:
+                config_path = existing_configs[0]  # Use the first matching config
+                logger.debug(f"Using existing config file: {config_path}")
+            else:
+                # Create new config file only if one doesn't exist
+                config_name = f"config_{self.experiment_config.jobname_prefix}.yaml"
+                config_path = configs_dir / config_name
+                self.experiment_config.save(config_path)
+                logger.debug(f"Created new config file: {config_path}")
+            
+            # Submit job using the config file
+            if not self.submit_job(str(config_path), job_name):
+                return False, [job_name]
+            
+            return True, []
+            
+        except Exception as e:
+            logger.error(f"Error running experiment: {str(e)}")
+            return False, ["Error: " + str(e)]

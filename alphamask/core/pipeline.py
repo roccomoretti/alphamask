@@ -326,6 +326,7 @@ class MaskingPipeline(DefaultPipeline):
         
         msa = prep_inputs.msa.copy()
         deletion_matrix = prep_inputs.deletion_matrix.copy()
+        self.logger.info(f"Masking mode: {self.masking_mode}")
         
         if self.masking_mode == "list":
             self.logger.info(f"Using list mode masking with columns: {self.cols}")

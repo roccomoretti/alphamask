@@ -3,7 +3,7 @@ import logging
 from typing import Optional, List
 
 from ..utils.slurm import SlurmJobManager, SlurmJobConfig
-from ..utils.types import ExperimentConfig, MaskingStrategy
+from ..utils.types import ExperimentConfig
 from ..utils.params import load_defaults
 
 from .base import BaseExperiment, Control, ExperimentError
@@ -98,7 +98,6 @@ class FrustraExperiment(BaseExperiment):
             sequence=self.protein_config.sequence,
             jobname_prefix=f"{self.name}",
             parent_path=str(self.working_dir),
-            masking_strategy=MaskingStrategy.MASK_POSITIONS,
             positions=positions,  # Use positions from Frustra analysis
             num_recycles=self.defaults.get('num_recycles', 2),
             num_seeds=self.defaults.get('num_seeds', 2),

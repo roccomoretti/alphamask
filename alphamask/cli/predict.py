@@ -26,7 +26,6 @@ setup_imports()
 from alphamask.utils.config import load_config, validate_config
 from alphamask.utils.logging import setup_logging
 from alphamask.core.pipeline import DefaultPipeline, MaskingPipeline, MutatePipeline, MutateAndMaskingPipeline
-from alphamask.utils.types import MaskingStrategy
 
 def get_pipeline_class(pipeline_type: str) -> type:
     """Get the appropriate pipeline class based on pipeline type"""
@@ -120,6 +119,7 @@ def main():
         
         # Initialize and run pipeline
         logger.info(f"Running prediction pipeline: {args.pipeline}")
+        
         # Log the config in human readable format with indentation
         logger.info(f"Config: {yaml.dump(config, default_flow_style=False, indent=4)}")
         

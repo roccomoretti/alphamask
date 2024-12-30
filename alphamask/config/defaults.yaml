@@ -46,7 +46,6 @@ mask_deletion_matrix: false
 cols: []
 cols_range: []
 mask_identity: "X"
-masking_strategy: "iterative_single"  # Must match MaskingStrategy enum values
 
 # Pipeline parameters
 pipeline_type: "default"  # One of: default, masking, mutate, mutate_and_mask

@@ -22,18 +22,6 @@
                             "pattern": "^[A-Z0-9]+$",
                             "description": "Optional UniProt identifier"
                         },
-                        "masking_strategy": {
-                            "type": "string",
-                            "description": "The masking strategy to use",
-                            "enum": [
-                                "none",
-                                "mask_positions",
-                                "unmask_positions",
-                                "iterative_single",
-                                "iterative_single_mask_mutate",
-                                "mutate_and_mask"
-                            ]
-                        },
                         "iterative_masking": {
                             "type": "object",
                             "required": ["enabled"],
@@ -160,18 +148,6 @@
                     }
                 }
             }
-        },
-        "masking_strategy": {
-            "type": "string",
-            "description": "The masking strategy to use",
-            "enum": [
-                "none",
-                "mask_positions",
-                "unmask_positions",
-                "iterative_single",
-                "iterative_single_mask_mutate",
-                "mutate_and_mask"
-            ]
         }
     }
 } 

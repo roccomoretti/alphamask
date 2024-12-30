@@ -3,7 +3,7 @@ import logging
 from typing import Optional, List, Dict, Any
 
 from ..utils.slurm import SlurmJobManager, SlurmJobConfig
-from ..utils.types import ExperimentConfig, MaskingStrategy
+from ..utils.types import ExperimentConfig
 from ..utils.params import load_defaults
 
 from .base import BaseExperiment, Control, ExperimentError
@@ -109,13 +109,12 @@ class IterativeExperiment(BaseExperiment):
             sequence=self.protein_config.sequence,
             jobname_prefix=f"{self.name}_wt_pos{position}",
             parent_path=str(self.wt_dir / f"pos_{position}"),
-            masking_strategy=MaskingStrategy.ITERATIVE_SINGLE,
             positions=[position],
             mask_token=self.mask_token,
             num_recycles=self.defaults.get('num_recycles', 2),
             num_seeds=self.defaults.get('num_seeds', 2),
             setup_path=str(self.slurm_config.setup_path),
-            pipeline_type="mask"
+            pipeline_type="masking"
         )
     
     def _create_mutation_config(
@@ -131,7 +130,6 @@ class IterativeExperiment(BaseExperiment):
             msa=self.wt_msa,
             jobname_prefix=f"{self.name}_{mutation_name}_pos{position}",
             parent_path=str(self.mutations_dir / mutation_name / f"pos_{position}"),
-            masking_strategy=MaskingStrategy.ITERATIVE_SINGLE,
             positions=[position],
             mask_token=self.mask_token,
             num_recycles=self.defaults.get('num_recycles', 2),

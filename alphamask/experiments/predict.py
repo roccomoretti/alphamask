@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from ..utils.types import ExperimentConfig, MaskingStrategy
+from ..utils.types import ExperimentConfig
 from ..core.pipeline import DefaultPipeline, MaskingPipeline, MutatePipeline, MutateAndMaskingPipeline
 
 logger = logging.getLogger(__name__)

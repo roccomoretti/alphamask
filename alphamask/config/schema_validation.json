@@ -9,11 +9,6 @@
         "type": "string",
         "enum": ["default", "vanilla", "masking", "mutate", "mutate_and_mask"]
       },
-      "masking_strategy": {
-        "description": "The masking strategy to use",
-        "type": "string",
-        "enum": ["none", "mask_positions", "unmask_positions", "iterative_single", "iterative_single_mask_mutate", "mutate_and_mask"]
-      },
       "unified_memory": {
         "description": "If True, use unified memory.",
         "type": "boolean"
@@ -259,7 +254,6 @@
       "cols",
       "cols_range",
       "mask_identity",
-      "parent_path",
-      "masking_strategy"
+      "parent_path"
     ]
 }

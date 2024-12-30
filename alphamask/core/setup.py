@@ -178,15 +178,20 @@ class ColabDesignUtils:
             id: Maximum pairwise sequence identity (%)
             qid: Minimum sequence identity with query (%)
         """
-        print(f"Current PATH: {os.environ['PATH']}")
-        print(f"hhfilter location: {shutil.which('hhfilter')}")
+        # print(f"Current PATH: {os.environ['PATH']}")
+        # print(f"hhfilter location: {shutil.which('hhfilter')}")
+        # TODO: Add logging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Current PATH: {os.environ['PATH']}")
+        logger.debug(f"hhfilter location: {shutil.which('hhfilter')}")
 
         if shutil.which('hhfilter') is None:
-            print("hhfilter not found in PATH. Adding it now.")
+            logger.debug("hhfilter not found in PATH. Adding it now.")
             hhsuite_bin = self.setup_path / 'hhsuite/bin'
             hhsuite_scripts = self.setup_path / 'hhsuite/scripts'
             os.environ["PATH"] = f"{os.environ['PATH']}:{hhsuite_bin}:{hhsuite_scripts}"
-            print(f"Updated PATH: {os.environ['PATH']}")
-            print(f"hhfilter location after update: {shutil.which('hhfilter')}")
+            logger.debug(f"Updated PATH: {os.environ['PATH']}")
+            logger.debug(f"hhfilter location after update: {shutil.which('hhfilter')}")
 
         os.system(f"hhfilter -id {id} -qid {qid} -i {input} -o {output}") 
