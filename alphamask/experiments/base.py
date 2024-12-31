@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from pathlib import Path
 import logging
 
@@ -8,6 +8,7 @@ from ..utils.slurm import SlurmJobManager, SlurmJobConfig
 from ..utils.types import ExperimentConfig
 from ..utils.params import load_defaults
 from colabdesign.af.contrib import predict
+from ..core.model import CompressionConfig
 
 from .types import (
     ProteinConfig, Condition, AprioriExperiment,
@@ -31,7 +32,8 @@ class BaseExperiment(ABC):
         slurm_config: Optional[SlurmJobConfig] = None,
         working_dir: Optional[Path] = None,
         dry_run: bool = False,
-        schema_path: Optional[Path] = None
+        schema_path: Optional[Path] = None,
+        compression_config: Optional[CompressionConfig] = None
     ):
         self.name = name
         self.protein_config = protein_config
@@ -39,6 +41,7 @@ class BaseExperiment(ABC):
         self.working_dir = (working_dir or Path.cwd() / "experiments" / name).resolve()
         self.dry_run = dry_run
         self.schema_path = schema_path.resolve() if schema_path else None
+        self.compression_config = compression_config
         
         # Only create the working directory if it's needed
         if not self.dry_run and isinstance(self, (IterativeExperiment, FrustraExperiment)):
@@ -84,7 +87,8 @@ class Control:
         conditions: List[Condition],
         working_dir: Optional[Path] = None,
         dry_run: bool = False,
-        schema_path: Optional[Path] = None
+        schema_path: Optional[Path] = None,
+        compression_config: Optional[CompressionConfig] = None
     ):
         self.name = name
         self.protein_config = protein_config
@@ -92,6 +96,7 @@ class Control:
         self.conditions = conditions
         self.dry_run = dry_run
         self.schema_path = schema_path
+        self.compression_config = compression_config
         
         # Set working directory, ensuring it's under the experiment's controls directory
         if working_dir is None:
@@ -219,9 +224,18 @@ class IterativeExperiment(BaseExperiment):
         slurm_config: Optional[SlurmJobConfig] = None,
         working_dir: Optional[Path] = None,
         dry_run: bool = False,
-        schema_path: Optional[Path] = None
+        schema_path: Optional[Path] = None,
+        compression_config: Optional[CompressionConfig] = None
     ):
-        super().__init__("iterative_masking", protein_config, slurm_config, working_dir, dry_run, schema_path)
+        super().__init__(
+            "iterative_masking", 
+            protein_config, 
+            slurm_config, 
+            working_dir, 
+            dry_run, 
+            schema_path,
+            compression_config
+        )
         
         if not protein_config.iterative_masking.enabled:
             raise ExperimentError("Iterative masking is not enabled in configuration")
@@ -240,7 +254,7 @@ class IterativeExperiment(BaseExperiment):
         else:
             logger.info(f"[DRY RUN] Would create directory: {self.controls_dir}")
 
-        # Add vanilla control
+        # Add vanilla control with compression config
         self.controls.append(Control(
             "vanilla",
             self.protein_config,
@@ -248,7 +262,8 @@ class IterativeExperiment(BaseExperiment):
             [Condition(mask=False, mutate=False)],
             working_dir=self.controls_dir,
             dry_run=self.dry_run,
-            schema_path=self.schema_path
+            schema_path=self.schema_path,
+            compression_config=self.compression_config
         ))
         
         # Add mutation controls
@@ -309,9 +324,18 @@ class AprioriExperiment(BaseExperiment):
         slurm_config: Optional[SlurmJobConfig] = None,
         working_dir: Optional[Path] = None,
         dry_run: bool = False,
-        schema_path: Optional[Path] = None
+        schema_path: Optional[Path] = None,
+        compression_config: Optional[CompressionConfig] = None
     ):
-        super().__init__("apriori_masking", protein_config, slurm_config, working_dir, dry_run, schema_path)
+        super().__init__(
+            "apriori_masking", 
+            protein_config, 
+            slurm_config, 
+            working_dir, 
+            dry_run, 
+            schema_path,
+            compression_config
+        )
         
         if not protein_config.apriori_masking.enabled:
             raise ExperimentError("A priori masking is not enabled in configuration")
@@ -366,14 +390,18 @@ class AprioriExperiment(BaseExperiment):
         """No separate setup needed as conditions are handled directly in submit"""
         pass
     
-    def _create_config(self, experiment: AprioriExperiment, condition: Condition) -> ExperimentConfig:
-        """Create configuration for a specific a priori experiment condition"""
+    def _create_config(self, experiment: AprioriExperiment, condition: Condition) -> Tuple[ExperimentConfig, str]:
+        """Create configuration for a specific a priori experiment condition
+        
+        Returns:
+            Tuple[ExperimentConfig, str]: The config object and job name
+        """
         # Create descriptive name for this condition
         condition_name = f"{'masked' if condition.mask else 'unmasked'}_{'mutated' if condition.mutate else 'unmutated'}"
         
         # Get hash for the sequence
         seq_hash = predict.get_hash(self.protein_config.sequence)[:5]
-        jobname = f"{experiment.name}_{seq_hash}"
+        job_name = f"{experiment.name}_{seq_hash}"
         
         # Set pipeline type based on condition
         if condition.mask and condition.mutate:
@@ -389,11 +417,16 @@ class AprioriExperiment(BaseExperiment):
         positions = experiment.positions if condition.mask else []
         mutations = experiment.mutations if condition.mutate else []
         
+        # Create working directory for this condition
+        condition_dir = self.working_dir / experiment.name / condition_name
+        configs_dir = condition_dir / "configs"
+        configs_dir.mkdir(parents=True, exist_ok=True)
+        
         # Create config with proper masking settings
         config = ExperimentConfig(
             sequence=self.protein_config.sequence,
-            jobname_prefix=jobname,  # Use consistent jobname format
-            parent_path=str(self.working_dir / experiment.name / condition_name),
+            jobname_prefix=job_name,  # Use job_name for consistency
+            parent_path=str(condition_dir),
             positions=positions,
             cols=positions,
             mutations=mutations,
@@ -408,19 +441,10 @@ class AprioriExperiment(BaseExperiment):
             mask_identity="X"
         )
         
-        return config
+        return config, job_name
     
     def submit(self) -> bool:
-        """Orchestrate the experiment submission process
-        
-        This method:
-        1. Validates the experiment configuration
-        2. Creates configs for each condition
-        3. Uses SlurmJobManager to submit jobs
-        
-        Returns:
-            bool: True if all jobs were submitted successfully
-        """
+        """Orchestrate the experiment submission process"""
         try:
             self.validate()
             
@@ -428,17 +452,18 @@ class AprioriExperiment(BaseExperiment):
             success = True
             for experiment in self.experiments:
                 for condition in experiment.conditions:
-                    # Create experiment configuration for this condition
-                    config = self._create_config(experiment, condition)
+                    # Create experiment configuration and get job name
+                    config, job_name = self._create_config(experiment, condition)
                     
-                    # Create working directory for this condition
-                    condition_dir = self.working_dir / experiment.name / f"{'masked' if condition.mask else 'unmasked'}_{'mutated' if condition.mutate else 'unmutated'}"
+                    # Get condition name for directory structure
+                    condition_name = f"{'masked' if condition.mask else 'unmasked'}_{'mutated' if condition.mutate else 'unmutated'}"
                     
                     # Initialize SLURM job manager for this condition
                     job_manager = SlurmJobManager(
                         experiment_config=config,
                         slurm_config=self.slurm_config,
-                        working_dir=str(condition_dir)
+                        working_dir=str(self.working_dir / experiment.name / condition_name),
+                        job_name=job_name
                     )
                     
                     # Let SlurmJobManager handle the actual job submission
@@ -482,9 +507,18 @@ class FrustraExperiment(BaseExperiment):
         slurm_config: Optional[SlurmJobConfig] = None,
         working_dir: Optional[Path] = None,
         dry_run: bool = False,
-        schema_path: Optional[Path] = None
+        schema_path: Optional[Path] = None,
+        compression_config: Optional[CompressionConfig] = None
     ):
-        super().__init__("frustra_masking", protein_config, slurm_config, working_dir, dry_run, schema_path)
+        super().__init__(
+            "frustra_masking", 
+            protein_config, 
+            slurm_config, 
+            working_dir, 
+            dry_run, 
+            schema_path,
+            compression_config
+        )
         
         if not protein_config.frustra_masking.enabled:
             raise ExperimentError("Frustra masking is not enabled in configuration")

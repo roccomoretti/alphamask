@@ -15,7 +15,7 @@ from ..utils.params import load_defaults
 class DefaultPipeline:
     """Base pipeline for running AlphaFold predictions."""
     
-    def __init__(self, params: Optional[Dict] = None, yaml_file: Optional[str] = None):
+    def __init__(self, params: Optional[Dict] = None, yaml_file: Optional[str] = None, use_parent_dir: bool = False):
         self.logger = logging.getLogger(__name__)
         
         # Initialize required parameters
@@ -104,6 +104,8 @@ class DefaultPipeline:
         # Validate parameters
         self._validate_parameters()
         
+        self.use_parent_dir = use_parent_dir
+        
     def _validate_parameters(self):
         """Validate required parameters are present and of correct type."""
         # Check required parameters are present
@@ -147,15 +149,35 @@ class DefaultPipeline:
                     setattr(self, param, Path(str(value)))
                     self.logger.debug(f"Converted {param} to: {getattr(self, param)}")
                     
-    def _save_config(self, jobname: str, parent_path: str) -> None:
-        """Save pipeline configuration."""
-        config = {k: v for k, v in self.params.items()}
-        config_path = Path(parent_path) / jobname / f"{jobname}_config.yaml"
+    def _save_config(self, jobname: str, parent_path: Path) -> None:
+        """Save configuration to file.
         
-        if not config_path.exists():
+        Args:
+            jobname: Name of the job
+            parent_path: Parent directory path
+        """
+        try:
+            # Determine config path based on use_parent_dir flag
+            if self.use_parent_dir:
+                config_path = parent_path / f"{jobname}_config.yaml"
+                self.logger.info(f"Saving config directly to parent directory: {config_path}")
+            else:
+                config_path = parent_path / jobname / f"{jobname}_config.yaml"
+                self.logger.info(f"Saving config to job directory: {config_path}")
+            
+            # Ensure parent directory exists
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Save config
             with open(config_path, "w") as f:
-                yaml.dump(config, f)
+                yaml.dump(self.params, f, default_flow_style=False)
                 
+            self.logger.debug(f"Configuration saved to: {config_path}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save configuration: {str(e)}")
+            raise
+        
     def _prepare_inputs(self) -> 'PrepInputs':
         """Prepare inputs for the pipeline."""
         self.logger.info("Preparing pipeline inputs")
@@ -190,6 +212,7 @@ class DefaultPipeline:
             parent_path=self.parent_path,
             overwrite=self.overwrite,
             show_figures=self.show_figures,
+            use_parent_dir=self.use_parent_dir
         )
         
         # Process inputs
@@ -197,7 +220,7 @@ class DefaultPipeline:
         prep_inputs.get_msa()
         prep_inputs.use_templates()
         
-        # Store original MSA
+        # Store original MSA for later inspection
         self.stored_msas['original'] = prep_inputs.msa.copy()
         self.stored_msas['deletion_matrix'] = prep_inputs.deletion_matrix.copy()
         
@@ -266,6 +289,7 @@ class DefaultPipeline:
             cols_range=self.cols_range,
             mask_identity=self.mask_identity,
             mutations=self.mutations,
+            use_parent_dir=self.use_parent_dir
         )
         
         return run_alphafold
@@ -312,8 +336,8 @@ class DefaultPipeline:
 class MaskingPipeline(DefaultPipeline):
     """Pipeline for running AlphaFold predictions with masking."""
     
-    def __init__(self, params: Optional[Dict] = None, yaml_file: Optional[str] = None):
-        super().__init__(params, yaml_file)
+    def __init__(self, params: Optional[Dict] = None, yaml_file: Optional[str] = None, use_parent_dir: bool = False):
+        super().__init__(params, yaml_file, use_parent_dir)
         
         # Ensure setup_path is set
         if not hasattr(self, 'setup_path') or not self.setup_path:
@@ -388,8 +412,8 @@ class MaskingPipeline(DefaultPipeline):
 class MutatePipeline(MaskingPipeline):
     """Pipeline for running AlphaFold predictions with mutations."""
     
-    def __init__(self, params: Optional[Dict] = None, yaml_file: Optional[str] = None):
-        super().__init__(params, yaml_file)
+    def __init__(self, params: Optional[Dict] = None, yaml_file: Optional[str] = None, use_parent_dir: bool = False):
+        super().__init__(params, yaml_file, use_parent_dir)
         
     def _apply_mutations(self, prep_inputs: 'PrepInputs') -> np.ndarray:
         """Apply mutations to MSA."""
@@ -428,8 +452,8 @@ class MutatePipeline(MaskingPipeline):
 class MutateAndMaskingPipeline(MaskingPipeline):
     """Pipeline for running AlphaFold predictions with both mutations and masking."""
     
-    def __init__(self, params: Optional[Dict] = None, yaml_file: Optional[str] = None):
-        super().__init__(params, yaml_file)
+    def __init__(self, params: Optional[Dict] = None, yaml_file: Optional[str] = None, use_parent_dir: bool = False):
+        super().__init__(params, yaml_file, use_parent_dir)
         
     def _apply_mutations_and_masking(self, prep_inputs: 'PrepInputs') -> Tuple[np.ndarray, np.ndarray]:
         """Apply both mutations and masking to MSA."""

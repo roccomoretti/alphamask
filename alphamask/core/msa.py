@@ -49,6 +49,7 @@ class PrepInputs:
         parent_path (Path): Path to parent directory
         overwrite (bool): Whether to overwrite existing files
         show_figures (bool): Whether to show figures
+        use_parent_dir (bool): Whether to use parent directory for job directories
     """
     
     def __init__(
@@ -73,6 +74,7 @@ class PrepInputs:
         parent_path: Optional[Union[str, Path]] = None,
         overwrite: bool = False,
         show_figures: bool = True,
+        use_parent_dir: bool = False
     ):
         """Initialize PrepInputs."""
         self.logger = logging.getLogger(__name__)
@@ -125,6 +127,7 @@ class PrepInputs:
         self.do_not_align = do_not_align
         self.overwrite = overwrite
         self.show_figures = show_figures
+        self.use_parent_dir = use_parent_dir
         
         # Initialize other attributes
         self.input_opts = {}
@@ -246,9 +249,15 @@ class PrepInputs:
             kwargs["user_agent"] = "colabdesign/gamma"
             return run_mmseqs2(*args, **kwargs)
 
-        os.makedirs(self.parent_path / self.jobname, exist_ok=True)
-        input_path = self.parent_path / self.jobname / "in"
-        input_path.mkdir(exist_ok=True)
+        # Create input directory based on use_parent_dir flag
+        if self.use_parent_dir:
+            input_path = self.parent_path / "in"
+            self.logger.info(f"Using parent directory for MSA: {input_path}")
+        else:
+            input_path = self.parent_path / self.jobname / "in"
+            self.logger.info(f"Using job-specific directory for MSA: {input_path}")
+        
+        input_path.mkdir(parents=True, exist_ok=True)
         
         self.Ls = [len(x) for x in self.u_sequences]
         
@@ -257,7 +266,7 @@ class PrepInputs:
         elif self.msa_method == "single_sequence":
             self._handle_single_sequence_msa()
         elif self.msa_method.startswith("custom_"):
-            self._handle_custom_msa()
+            self._handle_custom_msa(input_path)
         else:
             raise ValueError(f"Unknown MSA method: {self.msa_method}")
 
@@ -307,8 +316,12 @@ class PrepInputs:
             a3m.write(f">{self.jobname}\n{self.sub_seq}\n")
         self.msa, self.deletion_matrix = predict.parse_a3m(msa_file)
 
-    def _handle_custom_msa(self) -> None:
-        """Handle custom MSA file processing."""
+    def _handle_custom_msa(self, input_path: Path) -> None:
+        """Handle custom MSA file processing.
+        
+        Args:
+            input_path: Path to the input directory where MSA files should be saved
+        """
         msa_format = self.msa_method.split("_")[1]
         self.logger.info(f"MSA mode: {self.msa_method}")
         
@@ -325,12 +338,10 @@ class PrepInputs:
         with open(self.custom_a3m_path, "r") as file:
             lines = [line.replace("\x00", "") for line in file.readlines()]
             input_lines = [line for line in lines if line.strip() and not line.startswith("#")]
-            
-        # Create input directory and write MSA file
-        input_path = self.parent_path / self.jobname / "in"
-        input_path.mkdir(exist_ok=True, parents=True)
         
+        # Create MSA file in input directory
         msa_file = input_path / f"msa.{msa_format}"
+        self.logger.info(f"Creating MSA file at: {msa_file}")
         
         if not msa_file.exists():
             with open(msa_file, "w") as msa:
@@ -346,7 +357,11 @@ class PrepInputs:
         self._filter_msa(input_path)
 
     def _filter_msa(self, input_path: Path) -> None:
-        """Filter MSA based on parameters."""
+        """Filter MSA based on parameters.
+        
+        Args:
+            input_path: Path to the directory containing the MSA file
+        """
         self.logger.info("Filtering MSA")
         
         # Ensure hhsuite is in PATH
@@ -555,13 +570,19 @@ class PrepInputs:
 
     def _create_directories(self):
         """Create necessary directories for the job."""
-        job_dir = self.parent_path / self.jobname
+        if self.use_parent_dir:
+            # When running through CLI, use parent_path directly
+            job_dir = self.parent_path
+            self.logger.info(f"Using parent directory: {job_dir}")
+        else:
+            # Normal behavior: create job-specific subdirectory
+            job_dir = self.parent_path / self.jobname
+            self.logger.info(f"Creating job-specific subdirectory: {job_dir}")
+            
         input_dir = job_dir / "in"
         output_dir = job_dir / "out"
         pdb_dir = output_dir / "pdbs"
         pkl_dir = output_dir / "pkl"
-        
-        self.logger.info(f"Creating job directories at {job_dir}")
         
         # Create all required directories
         for directory in [job_dir, input_dir, output_dir, pdb_dir, pkl_dir]:

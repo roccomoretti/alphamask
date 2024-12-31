@@ -15,7 +15,7 @@ logging.basicConfig(
 logger = logging.getLogger("alphamask.cli.main")
 logger.setLevel(logging.DEBUG)
 
-from .commands import setup_cmd, submit_jobs_cmd, help_cmd, predict_cmd, predict_job_cmd
+from .commands import setup_cmd, submit_jobs_cmd, help_cmd, predict_cmd, predict_job_cmd, extract_pdbs_cmd
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the main argument parser"""
@@ -140,6 +140,23 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force local execution"
     )
+    run_parser.add_argument(
+        "--compress",
+        choices=["h5", "npz", "both"],
+        default="both",
+        help="Compression format for predictions"
+    )
+    run_parser.add_argument(
+        "--compression-level",
+        type=int,
+        default=9,
+        help="Compression level (1-9)"
+    )
+    run_parser.add_argument(
+        "--store-uncompressed",
+        action="store_true",
+        help="Store uncompressed PDBs alongside compressed data"
+    )
     
     # Predict command
     predict_parser = subparsers.add_parser(
@@ -193,6 +210,48 @@ def create_parser() -> argparse.ArgumentParser:
         help="Conda environment name containing AlphaMask"
     )
     
+    # Extract PDBs command
+    extract_pdbs_parser = subparsers.add_parser(
+        "extract-pdbs",
+        help="Extract PDBs from compressed storage",
+        parents=[parent_parser]
+    )
+    extract_pdbs_parser.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Path to protein configuration file"
+    )
+    extract_pdbs_parser.add_argument(
+        "--proteins",
+        type=str,
+        nargs="*",
+        help="Specific proteins to extract (default: all)"
+    )
+    extract_pdbs_parser.add_argument(
+        "--models",
+        type=str,
+        nargs="*",
+        help="Specific models to extract (e.g., model_1, model_2)"
+    )
+    extract_pdbs_parser.add_argument(
+        "--seeds",
+        type=str,
+        nargs="*",
+        help="Specific seeds to extract"
+    )
+    extract_pdbs_parser.add_argument(
+        "--recycles",
+        type=str,
+        nargs="*",
+        help="Specific recycle iterations to extract"
+    )
+    extract_pdbs_parser.add_argument(
+        "--best-only",
+        action="store_true",
+        help="Extract only the best prediction"
+    )
+    
     return parser
 
 def setup_logging(debug: bool, log_file: str = None, quiet: bool = False):
@@ -225,15 +284,21 @@ def setup_logging(debug: bool, log_file: str = None, quiet: bool = False):
 
 def main():
     """Main entry point for the CLI"""
+    parser = create_parser()
+    
     try:
-        parser = create_parser()
         args = parser.parse_args()
+        
+        # If no command is provided, show help and exit
+        if not args.command:
+            parser.print_help()
+            return 1
         
         # Setup logging based on command line arguments
         setup_logging(
-            debug=args.debug,
-            log_file=args.log_file if hasattr(args, 'log_file') else None,
-            quiet=args.quiet if hasattr(args, 'quiet') else False
+            debug=getattr(args, 'debug', False),
+            log_file=getattr(args, 'log_file', None),
+            quiet=getattr(args, 'quiet', False)
         )
         
         logger.debug(f"Parsed arguments: {args}")
@@ -247,19 +312,25 @@ def main():
         elif args.command == "help":
             help_cmd(args)
         elif args.command == "predict":
-            logger.debug("Running predict command")
-            predict_cmd(args)
+            logger.debug("Running predict command, this needs to be refactored")
+            raise NotImplementedError("Predict command needs refactoring")
         elif args.command == "predict-job":
             logger.debug("Running predict-job command")
             predict_job_cmd(args)
+        elif args.command == "extract-pdbs":
+            logger.debug("Running extract-pdbs command")
+            extract_pdbs_cmd(args)
         else:
             parser.print_help()
-            sys.exit(1)
+            return 1
+            
+        return 0
+        
     except Exception as e:
+        # Set up basic error logging without args
+        setup_logging(debug=False, quiet=False)
         logger.error(f"Command failed: {str(e)}")
-        if args.debug:
-            logger.error(f"Traceback:\n{traceback.format_exc()}")
-        sys.exit(1)
+        return 1
 
 if __name__ == "__main__":
     sys.exit(main()) 

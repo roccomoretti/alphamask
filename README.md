@@ -110,3 +110,19 @@ python -m alphamask run --container ~/containers/vsc-frustra_masking.sif \
 # You can find the available partitions and gpu types with the following command:
 sinfo -o "%10P %10G %10O %10l %10c"
 
+# Extract all PDBs
+alphamask extract-pdbs --config config.yaml
+
+# Extract only best predictions
+alphamask extract-pdbs --config config.yaml --best-only
+
+# Extract specific models/seeds/recycles
+alphamask extract-pdbs --config config.yaml \
+    --models model_1 model_2 \
+    --seeds 1 2 \
+    --recycles 0 1
+
+# Extract for specific proteins
+alphamask extract-pdbs --config config.yaml \
+    --proteins protein1 protein2 \
+    --best-only

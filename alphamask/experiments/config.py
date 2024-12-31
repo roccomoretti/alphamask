@@ -5,6 +5,7 @@ import logging
 from dataclasses import asdict
 import os
 import json
+from types import SimpleNamespace
 
 from .types import (
     ValidationError, LogLevel, Condition, AprioriExperiment,
@@ -130,30 +131,71 @@ def validate_configuration(config: MaskingConfiguration) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Validation error: {str(e)}"
 
-def process_configuration(file_path: str) -> MaskingConfiguration:
-    """Main function to load, validate, and process a masking configuration file."""
-    yaml_data = load_yaml_config(file_path)
-    
-    # Add schema path to configuration if not present
-    if 'schema_path' not in yaml_data:
-        schema_path = Path(__file__).parent.parent / "config" / "schema_validation.json"
-        yaml_data['schema_path'] = str(schema_path.resolve())
-        logger.info(f"Using default schema path: {yaml_data['schema_path']}")
-    
-    # Create configuration object
+def process_configuration(config_path: str) -> Any:
+    """Process and validate configuration file."""
     try:
-        config = create_config_from_dict(yaml_data)
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        # Add schema path if not present
+        if 'schema_path' not in config:
+            default_schema = Path(__file__).parent.parent / "config" / "schema_validation.json"
+            config['schema_path'] = str(default_schema.resolve())
+            logger.info(f"Using default schema path: {config['schema_path']}")
+        
+        # Convert to object for easier access
+        config = SimpleNamespace(**config)
+        
+        # Ensure proteins is a dictionary
+        if not hasattr(config, 'proteins') or not isinstance(config.proteins, dict):
+            raise ValidationError("Configuration must contain a 'proteins' dictionary")
+        
+        # Convert each protein config to object
+        for protein_id, protein_config in config.proteins.items():
+            config.proteins[protein_id] = SimpleNamespace(**protein_config)
+            
+            # Convert masking configurations to objects
+            if hasattr(config.proteins[protein_id], 'iterative_masking'):
+                iterative = config.proteins[protein_id].iterative_masking
+                if isinstance(iterative, dict):
+                    config.proteins[protein_id].iterative_masking = SimpleNamespace(**iterative)
+            
+            if hasattr(config.proteins[protein_id], 'apriori_masking'):
+                apriori = config.proteins[protein_id].apriori_masking
+                if isinstance(apriori, dict):
+                    # Convert experiments list
+                    if 'experiments' in apriori:
+                        apriori['experiments'] = [
+                            SimpleNamespace(**exp) if isinstance(exp, dict) else exp
+                            for exp in apriori['experiments']
+                        ]
+                        # Convert conditions in each experiment
+                        for exp in apriori['experiments']:
+                            if hasattr(exp, 'conditions'):
+                                exp.conditions = [
+                                    SimpleNamespace(**cond) if isinstance(cond, dict) else cond
+                                    for cond in exp.conditions
+                                ]
+                    config.proteins[protein_id].apriori_masking = SimpleNamespace(**apriori)
+            
+            if hasattr(config.proteins[protein_id], 'frustra_masking'):
+                frustra = config.proteins[protein_id].frustra_masking
+                if isinstance(frustra, dict):
+                    config.proteins[protein_id].frustra_masking = SimpleNamespace(**frustra)
+        
+        # Initialize global settings
+        if not hasattr(config, 'global_settings'):
+            config.global_settings = SimpleNamespace()
+        elif isinstance(config.global_settings, dict):
+            config.global_settings = SimpleNamespace(**config.global_settings)
+            
+            # Convert nested dictionaries to SimpleNamespace
+            for key, value in vars(config.global_settings).items():
+                if isinstance(value, dict):
+                    setattr(config.global_settings, key, SimpleNamespace(**value))
+        
+        return config
+        
     except Exception as e:
-        raise ValidationError(f"Error creating configuration objects: {e}")
-    
-    # Validate configuration
-    is_valid, message = validate_configuration(config)
-    if not is_valid:
-        raise ValidationError(f"Configuration validation failed: {message}")
-    
-    # Setup logging if enabled
-    if config.global_settings.logging.enabled:
-        setup_logging(config.global_settings.logging)
-        logging.info("Configuration loaded and validated successfully")
-    
-    return config 
+        logger.error(f"Error processing configuration: {str(e)}")
+        raise 

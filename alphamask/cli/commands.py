@@ -249,7 +249,10 @@ def predict_job_cmd(args):
             logger.info(f"Running prediction pipeline: {args.pipeline}")
             logger.info(f"Config: {yaml.dump(config, default_flow_style=False, indent=4)}")
             
-            pipeline = pipeline_class(params=config)
+            pipeline = pipeline_class(
+                params=config,
+                use_parent_dir=True
+            )
             result = pipeline.run()
             
             if not result.success:
@@ -281,6 +284,9 @@ def submit_jobs_cmd(args):
             - partition (str): SLURM partition
             - gpu_type (str): GPU type to request
             - force_local (bool): Force local execution
+            - compress (str): Compression format ("h5", "npz", or "both")
+            - compression_level (int): Compression level (1-9)
+            - store_uncompressed (bool): Whether to store uncompressed PDBs
             - debug (bool): Enable debug logging
             - quiet (bool): Disable logging output
             - log_file (str, optional): Path to log file
@@ -296,27 +302,45 @@ def submit_jobs_cmd(args):
     ) as progress:
         task = progress.add_task("Submitting jobs...", total=None)
         try:
-            # Create SLURM configuration with alphamask predict-job command
+            # Create compression config
+            from ..core.model import CompressionConfig
+            compression_config = CompressionConfig(
+                compress_format=args.compress,
+                compression_level=args.compression_level,
+                store_uncompressed_pdbs=args.store_uncompressed,
+                store_best_pdb=True  # Always store best PDB
+            )
+            
+            # Create SLURM configuration
             slurm_config = SlurmJobConfig(
                 container_path=args.container,
-                script_path="alphamask predict-job",  # Just the command, environment setup will be in the job script
+                script_path="alphamask predict-job",
                 schema_path=args.schema,
                 partition=None if args.force_local else args.partition,
                 gpu_type=None if args.force_local else args.gpu_type,
-                setup_commands=[  # Add setup commands that will be included in the job script
-                    "conda activate alphamask"
-                ]
+                setup_commands=["conda activate alphamask"]
             )
             
-            # Get base directory from the path where experiments were set up
+            # Get base directory
             base_dir = Path(args.path) if hasattr(args, 'path') else Path("/work/nw99ixuq-alphamask/my_experiments")
             
-            # Run experiments
+            # Add compression config to experiment parameters
+            config = load_config(args.config)
+            if 'global_settings' not in config:
+                config['global_settings'] = {}
+            config['global_settings']['compression'] = {
+                'format': args.compress,
+                'level': args.compression_level,
+                'store_uncompressed': args.store_uncompressed
+            }
+            
+            # Run experiments with compression config
             success = run_experiments(
                 config_path=args.config,
                 slurm_config=slurm_config,
                 base_dir=base_dir,
-                protein_ids=args.proteins
+                protein_ids=args.proteins,
+                compression_config=compression_config  # Pass compression config
             )
             
             progress.update(task, completed=True)
@@ -331,7 +355,10 @@ def submit_jobs_cmd(args):
                     "Base Directory": str(base_dir),
                     "Partition": args.partition if not args.force_local else "Local",
                     "GPU Type": args.gpu_type if not args.force_local else "Local",
-                    "Proteins": ", ".join(args.proteins) if args.proteins else "All"
+                    "Proteins": ", ".join(args.proteins) if args.proteins else "All",
+                    "Compression": args.compress,
+                    "Compression Level": args.compression_level,
+                    "Store Uncompressed": "Yes" if args.store_uncompressed else "No"
                 }
             )
             
@@ -453,3 +480,61 @@ def help_cmd(args):
             "  alphamask help config",
             title="AlphaMask Help"
         ))
+
+def extract_pdbs_cmd(args):
+    """Extract PDBs from compressed storage."""
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Extracting PDBs...", total=None)
+            
+            # Load and parse YAML config
+            with open(args.config) as f:
+                config = yaml.safe_load(f)
+            
+            # Get proteins to process
+            proteins = args.proteins if args.proteins else list(config.get("proteins", {}).keys())
+            
+            if not proteins:
+                raise ValueError("No proteins found in config file")
+            
+            from alphamask.analysis.compressed import extract_pdbs_from_experiments
+            
+            success = extract_pdbs_from_experiments(
+                config=config,
+                protein_ids=proteins,
+                models=args.models,
+                seeds=args.seeds,
+                recycles=args.recycles,
+                best_only=args.best_only
+            )
+            
+            progress.update(task, completed=True)
+            
+            show_summary(
+                success=success,
+                title="PDB Extraction Complete",
+                details={
+                    "Config File": args.config,
+                    "Proteins": ", ".join(proteins),
+                    "Models": ", ".join(args.models) if args.models else "All",
+                    "Seeds": ", ".join(args.seeds) if args.seeds else "All",
+                    "Recycles": ", ".join(args.recycles) if args.recycles else "All",
+                    "Best Only": "Yes" if args.best_only else "No"
+                }
+            )
+            
+    except Exception as e:
+        logger.error(f"PDB extraction failed: {str(e)}")
+        show_summary(
+            success=False,
+            title="PDB Extraction Failed",
+            details={
+                "Error": str(e),
+                "Config File": args.config
+            }
+        )
+        raise

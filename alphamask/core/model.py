@@ -3,7 +3,7 @@ import gc
 import jax
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import Dict, List, Optional, Any, Tuple, Union
+from typing import Dict, List, Optional, Any, Tuple, Union, Literal
 from pathlib import Path
 from datetime import datetime
 import logging
@@ -13,6 +13,29 @@ from colabdesign.af.contrib.cyclic import add_cyclic_offset
 from colabdesign.shared.protein import _np_rmsd, _np_kabsch
 from colabdesign.shared.plot import plot_pseudo_3D, pymol_cmap
 from ..utils.types import AlphaFoldResult, AlphaFoldTempData, AlphaFoldAuxData
+import h5py
+from dataclasses import dataclass
+from colabdesign.af.alphafold.common import protein
+
+@dataclass
+class CompressionConfig:
+    """Configuration for compression storage
+    
+    Attributes:
+        compress_format: Format for compressed storage ("h5", "npz", or "both")
+        compression_level: Level of compression (1-9)
+        store_uncompressed_pdbs: Whether to save individual PDBs in uncompressed format
+        store_best_pdb: Whether to save best PDB in uncompressed format (defaults to True)
+        
+    By default:
+        - Saves both H5 and NPZ compressed files
+        - Only saves best PDB in uncompressed format
+        - All other PDBs are stored in H5 format
+    """
+    compress_format: Literal["h5", "npz", "both"] = "both"
+    compression_level: int = 9
+    store_uncompressed_pdbs: bool = False  # Don't save individual uncompressed PDBs by default
+    store_best_pdb: bool = True  # Always save best PDB uncompressed by default
 
 class PrepModel:
     """
@@ -296,19 +319,22 @@ class RunAlphaFold:
                 value = Path(value) if not isinstance(value, Path) else value
             setattr(self, key, value)
             
-        # Set default for compressed storage
+        # Set default for compressed storage and parent_dir
         self.use_compressed_storage = kwargs.get('use_compressed_storage', False)
-            
+        self.use_parent_dir = kwargs.get('use_parent_dir', False)
+        
         self.logger.debug(f"Initialized with parent_path: {self.parent_path} (type: {type(self.parent_path)})")
-            
+        
         # Initialize models list
         if hasattr(self, 'model') and self.model == "all":
             self.models = self.af._model_names
         else:
             model_idx = int(self.model) - 1
             self.models = [self.af._model_names[model_idx]]
-            
+        
         self.logger.debug(f"Initialized models: {self.models}")
+
+        self.compression_config = kwargs.get('compression_config', CompressionConfig())
 
     def _get_pdb_filename(self, model: str, recycle: int, seed: int) -> str:
         """Generate PDB filename based on parameters."""
@@ -343,144 +369,253 @@ class RunAlphaFold:
             'O': atom_positions[:, 3].copy(),   # Oxygen
         }
 
-    def _save_compressed_data(self, base_name: str, aux_best: Dict, info: List, rank: List[int]) -> None:
-        """Save prediction data in compressed format."""
-        pdb_path = self.parent_path / self.jobname / "out"
-        npz_path = pdb_path / "npz"
-        npz_path.mkdir(parents=True, exist_ok=True)
+    def save_pdb_fixed(self, filename=None, aux=None) -> str:
+        """Fixed version of save_pdb that maintains array dimensions."""
+        if aux is None:
+            aux = self.af._tmp["best"]["aux"] if ("best" in self.af._tmp and "aux" in self.af._tmp["best"]) else self.af.aux
+        aux = aux["all"]
         
-        # Extract data to save
-        atom_positions = aux_best["atom_positions"]
-        plddt = aux_best["plddt"]
-        pae = aux_best.get("pae", None)
-        
-        # Save compressed data
-        npz_file = npz_path / f"{base_name}_data.npz"
-        self.logger.info(f"Saving compressed data to {npz_file}")
-        
-        save_dict = {
-            'atom_positions': atom_positions,
-            'plddt': plddt,
-            'tag': info[rank[0]][0],
-            'metrics': info[rank[0]][1]
+        # Collect required fields
+        p = {
+            "aatype": aux["aatype"],
+            "residue_index": aux["residue_index"],
+            "atom_positions": aux["atom_positions"],
+            "atom_mask": aux["atom_mask"]
         }
-        if pae is not None:
-            save_dict['pae'] = pae
-            
-        np.savez_compressed(npz_file, **save_dict)
-
-    def _save_results(self, info: List, rank: List[int], aux_best: Dict) -> None:
-        """Save all prediction results in a single pickle file.
+        p["b_factors"] = 100 * p["atom_mask"] * aux["plddt"][..., None]
         
-        The results are saved in a hierarchical structure:
-        - seeds/: Contains data for each seed
-          - {seed_number}/: Data for each seed
-            - {model_name}/: Data for each model
-              - recycle_{n}/: Data for each recycle iteration
-                - backbone_atoms/: Backbone atom coordinates
-                  - N: Nitrogen coordinates
-                  - CA: Alpha carbon coordinates  
-                  - C: Carbon coordinates
-                  - O: Oxygen coordinates
-                - plddt: pLDDT scores
-                - pae: PAE matrix
-                - metrics: Prediction metrics
-        - best/: Contains the best prediction data
-          - backbone_atoms/: Same structure as above
-          - plddt: pLDDT scores
-          - pae: PAE matrix
-          - tag: Identifier
-          - metrics: Prediction metrics
-          - sequence_length: Length of sequence
-          
-        Additionally saves separate files:
-        - {base_name}_best_backbone.pkl: Contains only the backbone coordinates
-        - {base_name}_all_predictions.pkl: Contains the complete prediction data
+        # Convert protein object to PDB string directly
+        p_str = protein.to_pdb(protein.Protein(**p))
         
-        If use_compressed_storage is True:
-        - Saves atom positions and metrics in compressed npz format
-        - Only generates best.pdb, other PDBs can be generated later using generate_pdbs_from_compressed
-        """
-        pdb_path = self.parent_path / self.jobname / "out"
-        
-        # Generate base name
-        if self.mask_msa:
-            # Handle masking case (with or without mutations)
-            if self.masking_mode == "list":
-                # Format masked positions
-                if hasattr(self, 'cols') and self.cols:
-                    if len(self.cols) == 1:
-                        cols_str = str(self.cols[0])
-                    else:
-                        # Sort positions to ensure consistent naming
-                        sorted_cols = sorted(self.cols)
-                        # Group consecutive positions
-                        ranges = []
-                        current_range = [sorted_cols[0]]
-                        
-                        for pos in sorted_cols[1:]:
-                            if pos == current_range[-1] + 1:
-                                current_range.append(pos)
-                            else:
-                                ranges.append(current_range)
-                                current_range = [pos]
-                        ranges.append(current_range)
-                        
-                        # Format ranges
-                        range_strs = []
-                        for r in ranges:
-                            if len(r) == 1:
-                                range_strs.append(str(r[0]))
-                            else:
-                                range_strs.append(f"{r[0]}-{r[-1]}")
-                        cols_str = "_".join(range_strs)
-                else:
-                    cols_str = "false"
-                    
-                # Add mutations if present
-                if hasattr(self, 'mutations') and self.mutations:
-                    cols_str += "_mut_" + "_".join(self.mutations)
-                    
-                base_name = f"{self.jobname}_mask_{cols_str}_id_{self.mask_identity}"
-            else:
-                raise NotImplementedError("The masking_mode 'range' is not fully implemented yet.")
-        elif hasattr(self, 'mutations') and self.mutations:
-            # Handle mutation-only case
-            base_name = f"{self.jobname}_mut_" + "_".join(self.mutations)
+        if filename is None:
+            return p_str
         else:
-            base_name = f"{self.jobname}"
+            with open(filename, 'w') as f:
+                f.write(p_str)
+            return p_str
 
-        # Save PDB for best prediction (always save this one)
-        best_pdb_path = pdb_path / "pdbs" / f"{base_name}_best.pdb"
-        self.af.save_pdb(best_pdb_path)
+    def _save_compressed_data(self, base_name: str, aux_best: Dict, info: List, rank: List[int]) -> None:
+        """Save compressed prediction data."""
+        try:
+            # Determine output directory based on use_parent_dir flag
+            if self.use_parent_dir:
+                compressed_dir = self.parent_path / "out" / "compressed"
+            else:
+                compressed_dir = self.parent_path / self.jobname / "out" / "compressed"
+            
+            compressed_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Debug logging
+            self.logger.debug(f"all_predictions structure: {self.all_predictions.keys()}")
+            
+            # Save all CA coordinates in NPZ format
+            npz_path = compressed_dir / f"{base_name}_all_ca.npz"
+            self.logger.info(f"Saving all CA coordinates to {npz_path}")
+            
+            # Prepare data for NPZ - collect all CA coordinates
+            ca_data = {}
+            for seed_id, seed_data in self.all_predictions['seeds'].items():
+                for model_name, model_data in seed_data.items():
+                    for recycle_id, recycle_data in model_data.items():
+                        # Fix recycle ID format - remove 'recycle_' prefix if present
+                        clean_recycle_id = recycle_id.replace('recycle_', '')
+                        key = f"{model_name}_r{clean_recycle_id}_seed_{seed_id}"
+                        
+                        if 'atom_positions' in recycle_data:
+                            ca_data[f"{key}_ca"] = recycle_data['atom_positions'][:, 1].copy()  # CA atoms
+                            ca_data[f"{key}_plddt"] = recycle_data.get('plddt', None)
+                            if 'pae' in recycle_data:
+                                ca_data[f"{key}_pae"] = recycle_data['pae']
+                            self.logger.debug(f"Added CA coordinates for {key}")
+                        else:
+                            self.logger.warning(f"No atom positions found for {key}")
+            
+            # Save all CA coordinates
+            self.logger.debug(f"Saving {len(ca_data)} entries to NPZ file")
+            np.savez_compressed(npz_path, **ca_data)
+            
+            # Save full atom data and PDBs in H5 format
+            if self.compression_config.compress_format in ["h5", "both"]:
+                h5_path = compressed_dir / f"{base_name}_all_atoms.h5"
+                self.logger.info(f"Saving all atom data to {h5_path}")
+                
+                with h5py.File(h5_path, 'w') as h5f:
+                    # Create groups for different data types
+                    pdbs_grp = h5f.create_group('pdbs')
+                    data_grp = h5f.create_group('data')  # For storing other arrays
+                    
+                    for seed_id, seed_data in self.all_predictions['seeds'].items():
+                        for model_name, model_data in seed_data.items():
+                            for recycle_id, recycle_data in model_data.items():
+                                clean_recycle_id = recycle_id.replace('recycle_', '')
+                                
+                                if 'atom_positions' in recycle_data:
+                                    # Ensure arrays are numpy arrays with proper shapes
+                                    temp_aux = {
+                                        "all": {
+                                            "aatype": np.asarray(recycle_data["aatype"]),
+                                            "residue_index": np.asarray(recycle_data["residue_index"]),
+                                            "atom_positions": np.asarray(recycle_data["atom_positions"]),
+                                            "atom_mask": np.asarray(recycle_data["atom_mask"]),
+                                            "plddt": np.asarray(recycle_data["plddt"])
+                                        }
+                                    }
+                                    
+                                    try:
+                                        # Use our fixed save_pdb function instead
+                                        pdb_content = self.save_pdb_fixed(filename=None, aux=temp_aux)
+                                        self.logger.debug("Successfully generated PDB content")
+                                        
+                                        pdb_name = self._get_pdb_filename(
+                                            model_name, 
+                                            int(clean_recycle_id), 
+                                            int(seed_id)
+                                        )
+                                        
+                                        # Store PDB content as string dataset
+                                        pdb_bytes = pdb_content.encode('utf-8')
+                                        pdbs_grp.create_dataset(
+                                            pdb_name,
+                                            data=np.frombuffer(pdb_bytes, dtype='S1'),
+                                            compression=self.compression_config.compression_level
+                                        )
+                                        
+                                        # Store other data arrays in data_grp
+                                        # Use the same base name as PDB files (without .pdb extension)
+                                        data_prefix = self._get_pdb_filename(
+                                            model_name,
+                                            int(clean_recycle_id),
+                                            int(seed_id)
+                                        ).replace('.pdb', '')  # Remove .pdb extension
+                                        
+                                        for k, v in recycle_data.items():
+                                            if isinstance(v, np.ndarray):
+                                                data_grp.create_dataset(
+                                                    f"{data_prefix}/{k}",
+                                                    data=v,
+                                                    compression=self.compression_config.compression_level
+                                                )
+                                        
+                                    except Exception as e:
+                                        self.logger.error(f"Failed to generate PDB: {str(e)}")
+                                        self.logger.error(f"Array shapes that failed:")
+                                        for k, v in temp_aux["all"].items():
+                                            self.logger.error(f"  {k}: shape={v.shape}, dtype={v.dtype}")
+                                        raise
+                                else:
+                                    self.logger.warning(f"No atom positions found for {model_name}_{clean_recycle_id}_{seed_id}")
+                                
+            self.logger.debug("Successfully saved compressed data")
+            
+        except Exception as e:
+            self.logger.error(f"Error saving compressed data: {str(e)}")
+            raise
+
+    def _save_results(self, info: List, rank: List[int], aux_best: Dict, base_dir: Path) -> None:
+        """Save prediction results.
         
-        # Extract backbone atoms for best prediction
-        atom_positions = aux_best["atom_positions"]
-        self.logger.debug(f"atom_positions shape in _save_results: {atom_positions.shape}")
-        backbone_atoms = self._extract_backbone_atoms(atom_positions)
-        
-        # Save in compressed format if requested
-        if self.use_compressed_storage:
+        This method handles saving:
+        1. Best PDB file (if store_best_pdb=True)
+        2. All PDB files in compressed H5 format
+        3. CA coordinates in NPZ format
+        """
+        try:
+            if self.use_parent_dir:
+                base_dir = self.parent_path
+                self.logger.info(f"Saving results directly to parent directory: {base_dir}")
+            else:
+                base_dir = self.parent_path / self.jobname
+                self.logger.info(f"Saving results to job directory: {base_dir}")
+
+            # Debug logging for compression settings
+            self.logger.info(f"Compression config: {self.compression_config}")
+            self.logger.info(f"Store uncompressed PDBs: {self.compression_config.store_uncompressed_pdbs}")
+            self.logger.info(f"Store best PDB: {self.compression_config.store_best_pdb}")
+
+            pdb_path = base_dir / "out"
+            
+            # Generate base name
+            if self.mask_msa:
+                # Handle masking case (with or without mutations)
+                if self.masking_mode == "list":
+                    # Format masked positions
+                    if hasattr(self, 'cols') and self.cols:
+                        if len(self.cols) == 1:
+                            cols_str = str(self.cols[0])
+                        else:
+                            # Sort positions to ensure consistent naming
+                            sorted_cols = sorted(self.cols)
+                            # Group consecutive positions
+                            ranges = []
+                            current_range = [sorted_cols[0]]
+                            
+                            for pos in sorted_cols[1:]:
+                                if pos == current_range[-1] + 1:
+                                    current_range.append(pos)
+                                else:
+                                    ranges.append(current_range)
+                                    current_range = [pos]
+                            ranges.append(current_range)
+                            
+                            # Format ranges
+                            range_strs = []
+                            for r in ranges:
+                                if len(r) == 1:
+                                    range_strs.append(str(r[0]))
+                                else:
+                                    range_strs.append(f"{r[0]}-{r[-1]}")
+                            cols_str = "_".join(range_strs)
+                    else:
+                        cols_str = "false"
+                        
+                    # Add mutations if present
+                    if hasattr(self, 'mutations') and self.mutations:
+                        cols_str += "_mut_" + "_".join(self.mutations)
+                        
+                    base_name = f"{self.jobname}_mask_{cols_str}_id_{self.mask_identity}"
+                else:
+                    raise NotImplementedError("The masking_mode 'range' is not fully implemented yet.")
+            elif hasattr(self, 'mutations') and self.mutations:
+                # Handle mutation-only case
+                base_name = f"{self.jobname}_mut_" + "_".join(self.mutations)
+            else:
+                base_name = f"{self.jobname}"
+
+            # Create output directories
+            pdb_path.mkdir(parents=True, exist_ok=True)
+            (pdb_path / "figs").mkdir(parents=True, exist_ok=True)
+            (pdb_path / "compressed").mkdir(parents=True, exist_ok=True)
+            
+            # Only create pdbs directory if we're saving uncompressed files
+            if self.compression_config.store_uncompressed_pdbs or self.compression_config.store_best_pdb:
+                (pdb_path / "pdbs").mkdir(parents=True, exist_ok=True)
+
+            # Save best PDB if configured
+            if self.compression_config.store_best_pdb:
+                best_pdb_path = pdb_path / "pdbs" / f"{base_name}_best.pdb"
+                self.logger.info(f"Saving best PDB to {best_pdb_path}")
+                self.af.save_pdb(best_pdb_path)
+
+            self.logger.info("PDB files will only be stored in compressed H5 format")
+
+            # Save compressed data (includes PDBs in H5 format)
             self._save_compressed_data(base_name, aux_best, info, rank)
-        
-        # Save backbone positions and all predictions
-        pkl_path = pdb_path / "pkl"
-        pkl_path.mkdir(parents=True, exist_ok=True)
-        
-        best_backbone_file = pkl_path / f"{base_name}_best_backbone.pkl"
-        self.logger.info(f"Saving best backbone positions to {best_backbone_file}")
-        with open(best_backbone_file, 'wb') as f:
-            pickle.dump(backbone_atoms, f)
-        
-        all_predictions_file = pkl_path / f"{base_name}_all_predictions.pkl"
-        self.logger.info(f"Saving all predictions to {all_predictions_file}")
-        with open(all_predictions_file, 'wb') as f:
-            pickle.dump(self.all_predictions, f)
+            
+            # Plot results if available
+            try:
+                self._plot_results(aux_best, base_dir)
+            except Exception as e:
+                self.logger.warning(f"Could not create plots: {e}")
+            
+        except Exception as e:
+            self.logger.error(f"Error in _save_results: {str(e)}")
+            self.logger.debug("Exception details:", exc_info=True)
+            raise
 
-    def _plot_results(self, aux_best: Dict) -> None:
+    def _plot_results(self, aux_best: Dict, base_dir: Path) -> None:
         """Plot prediction results."""
         try:
-            pdb_path = self.parent_path / self.jobname / "out"
+            pdb_path = base_dir / "out"
             
             # Plot 3D structure
             plt.figure(figsize=(10, 5))
@@ -521,15 +656,12 @@ class RunAlphaFold:
     def validate_input_files(self) -> Optional[str]:
         """Validate that all required input files exist."""
         try:
-            # Ensure paths are Path objects
-            if not isinstance(self.parent_path, Path):
-                self.logger.debug(f"Converting parent_path from {type(self.parent_path)} to Path")
-                self.parent_path = Path(str(self.parent_path))
-                
-            if not hasattr(self, 'jobname'):
-                return "jobname attribute is missing"
-                
-            input_dir = self.parent_path / self.jobname / "in"
+            # Use parent_path directly or with jobname based on use_parent_dir
+            if self.use_parent_dir:
+                input_dir = self.parent_path / "in"
+            else:
+                input_dir = self.parent_path / self.jobname / "in"
+            
             msa_file = input_dir / "msa.a3m"
             filtered_msa = input_dir / "msa.filt.a3m"
             
@@ -604,7 +736,6 @@ class RunAlphaFold:
         """Run AlphaFold prediction with error handling."""
         try:
             # Validate input files
-            self.logger.info(f"Checking input directory: {self.parent_path / self.jobname / 'in'}")
             if error_msg := self.validate_input_files():
                 self.logger.error(f"Input validation failed: {error_msg}")
                 return AlphaFoldResult(success=False, error=error_msg, data=None)
@@ -623,19 +754,26 @@ class RunAlphaFold:
             self.logger.debug("Setting MLM options")
             self.af.set_opt("mlm", replace_fraction=0.15 if self.use_mlm else 0.0)
             
-            # Create output directories
-            pdb_path = self.parent_path / self.jobname / "out" / "pdbs"
+            # Create output directories based on use_parent_dir
+            if self.use_parent_dir:
+                base_dir = self.parent_path
+                self.logger.info(f"Using parent directory for outputs: {base_dir}")
+            else:
+                base_dir = self.parent_path / self.jobname
+                self.logger.info(f"Using job-specific directory for outputs: {base_dir}")
+            
+            pdb_path = base_dir / "out" / "pdbs"
             self.logger.info(f"Creating PDB output directory: {pdb_path}")
             pdb_path.mkdir(parents=True, exist_ok=True)
             
             for subdir in ["figs", "npz"]:
-                subdir_path = self.parent_path / self.jobname / "out" / subdir
+                subdir_path = base_dir / "out" / subdir
                 self.logger.debug(f"Creating output subdirectory: {subdir_path}")
                 subdir_path.mkdir(parents=True, exist_ok=True)
             
             # Run prediction cycles
             self.logger.info("Running prediction cycles")
-            with open(self.parent_path / self.jobname / "log.txt", "w") as handle:
+            with open(base_dir / "log.txt", "w") as handle:
                 seeds = list(range(self.seed, self.seed + self.num_seeds))
                 self.logger.debug(f"Using seeds: {seeds}")
                 
@@ -652,9 +790,9 @@ class RunAlphaFold:
                         
                         while recycle < self.num_recycles + 1:
                             self.logger.info(f"Running recycle {recycle}")
-                            # Run prediction cycle
+                            # Run prediction cycle with updated base_dir
                             self._run_prediction_cycle(
-                                handle, model, recycle, seed, prev_pos, info
+                                handle, model, recycle, seed, prev_pos, info, base_dir
                             )
                             
                             # Check early stopping
@@ -688,9 +826,9 @@ class RunAlphaFold:
                 self.logger.error(f"Failed to get auxiliary data: {str(e)}")
                 return AlphaFoldResult(success=False, error=str(e), data=None)
 
-            # Save and plot results
-            self._save_results(info, rank, aux_best)
-            self._plot_results(aux_best)
+            # Save and plot results with base_dir
+            self._save_results(info, rank, aux_best, base_dir)
+            self._plot_results(aux_best, base_dir)
 
             # Cleanup
             self.logger.debug("Running garbage collection")
@@ -717,7 +855,8 @@ class RunAlphaFold:
         recycle: int, 
         seed: int, 
         prev_pos: Optional[np.ndarray],
-        info: List
+        info: List,
+        base_dir: Path
     ) -> None:
         """Run a single prediction cycle and store results."""
         try:
@@ -746,23 +885,29 @@ class RunAlphaFold:
             atom_positions = self.af.aux["atom_positions"]
             self.logger.debug(f"Atom positions shape: {atom_positions.shape}")
             
-            # Store prediction data
+            # Store prediction data by pulling directly from self.af.aux
+            # (remove "['all']" references so we don't accidentally store a scalar)
             self.all_predictions['seeds'][str(seed)][model][f'recycle_{recycle}'] = {
-                'plddt': self.af.aux["plddt"].copy(),
-                'pae': self.af.aux["pae"].copy() if "pae" in self.af.aux else None,
-                'metrics': {k: self.af.aux['log'][k] for k in self.print_key if k in self.af.aux['log']}
+                "aatype": self.af.aux["aatype"].copy(),            # shape [N]
+                "residue_index": self.af.aux["residue_index"].copy(),  # shape [N]
+                "atom_positions": self.af.aux["atom_positions"].copy(),# shape [N, 37, 3]
+                "atom_mask": self.af.aux["atom_mask"].copy(),      # shape [N, 37]
+                "plddt": self.af.aux["plddt"].copy(),              # shape [N]
+                "pae": self.af.aux["pae"].copy() if "pae" in self.af.aux else None,
+                "metrics": {k: self.af.aux["log"][k] for k in self.print_key if k in self.af.aux["log"]}
             }
             
-            # Save PDB file
-            pdb_path = self.parent_path / self.jobname / "out" / "pdbs"
-            pdb_file = pdb_path / self._get_pdb_filename(model, recycle, seed)
-            self.logger.info(f"Saving PDB file: {pdb_file}")
-            
-            try:
-                self.af.save_pdb(str(pdb_file))
-                self.logger.info(f"Successfully saved PDB file: {pdb_file}")
-            except Exception as e:
-                self.logger.error(f"Failed to save PDB file {pdb_file}: {str(e)}")
+            # Only save uncompressed PDB files if configured to do so
+            if self.compression_config.store_uncompressed_pdbs:
+                pdb_path = base_dir / "out" / "pdbs"
+                pdb_file = pdb_path / self._get_pdb_filename(model, recycle, seed)
+                self.logger.debug(f"Saving uncompressed PDB file: {pdb_file}")
+                
+                try:
+                    self.af.save_pdb(str(pdb_file))
+                    self.logger.debug(f"Successfully saved uncompressed PDB file: {pdb_file}")
+                except Exception as e:
+                    self.logger.error(f"Failed to save uncompressed PDB file {pdb_file}: {str(e)}")
             
             # Save prediction metrics
             confidence = self.af.aux["plddt"].mean()
@@ -803,48 +948,3 @@ class RunAlphaFold:
         except Exception as e:
             self.logger.error(f"Error in prediction cycle {print_str}", exc_info=True)
             raise
-
-def generate_pdbs_from_compressed(npz_path: Union[str, Path], output_dir: Union[str, Path], af_model=None) -> None:
-    """Generate PDB files from compressed npz data.
-    
-    Args:
-        npz_path: Path to the compressed npz file
-        output_dir: Directory to save generated PDB files
-        af_model: Optional AlphaFold model instance. If not provided, will create a new one.
-        
-    This utility function can be used after the main inference to generate PDB files
-    from the compressed data. Useful in HPC environments to minimize disk writes
-    during the main computation.
-    """
-    npz_path = Path(npz_path)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Load compressed data
-    data = np.load(npz_path)
-    atom_positions = data['atom_positions']
-    plddt = data['plddt']
-    tag = str(data['tag'])
-    metrics = data['metrics'].item()  # Convert 0d array to dict
-    
-    # Create base filename from npz filename
-    base_name = npz_path.stem.replace('_data', '')
-    
-    # Initialize AF model if not provided
-    if af_model is None:
-        from colabdesign import mk_af_model
-        af_model = mk_af_model()
-    
-    # Set up model with loaded data
-    af_model._tmp = {
-        'atom_positions': atom_positions,
-        'plddt': plddt,
-    }
-    if 'pae' in data:
-        af_model._tmp['pae'] = data['pae']
-    
-    # Generate PDB file
-    output_file = output_dir / f"{base_name}.pdb"
-    af_model.save_pdb(output_file)
-    
-    return output_file

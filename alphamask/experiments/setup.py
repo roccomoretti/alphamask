@@ -6,6 +6,7 @@ import os
 
 from .config import process_configuration
 from .types import ValidationError, MaskingConfiguration
+from colabdesign.af.contrib import predict
 
 # Get logger for this module
 logger = logging.getLogger("alphamask.experiments.setup")
@@ -72,7 +73,10 @@ class ExperimentSetup:
             
             # Create protein-specific directories
             for protein_id in self.config.proteins:
-                protein_dir = self.base_dir / protein_id
+                # Get hash for the sequence
+                seq_hash = predict.get_hash(self.config.proteins[protein_id].sequence)[:5]
+                # Add the hash to the protein_id   
+                protein_dir = self.base_dir / f"{protein_id}_{seq_hash}"
                 protein_config = self.config.proteins[protein_id]
                 
                 # Create experiment type directories if enabled
