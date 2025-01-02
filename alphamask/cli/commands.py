@@ -6,6 +6,8 @@ from pathlib import Path
 import os
 import textwrap
 import yaml
+from typing import Dict
+from datetime import datetime, timedelta
 
 # Configure logging first
 logger = logging.getLogger("alphamask.cli.commands")
@@ -23,6 +25,18 @@ from ..utils.slurm import SlurmJobConfig
 from ..experiments.runner import run_experiments
 from ..utils.config import load_config, validate_config
 from ..core.pipeline import DefaultPipeline, MaskingPipeline, MutatePipeline, MutateAndMaskingPipeline
+
+from .utils.status import (
+    get_protein_jobs,
+    get_completed_jobs_by_protein,
+    create_stats_table,
+    create_jobs_table,
+    get_slurm_jobs,
+    get_job_counts,
+    parse_config_for_total_jobs,
+    get_completed_jobs_count,
+    create_status_layout,
+)
 
 console = Console()
 
@@ -540,161 +554,6 @@ def extract_pdbs_cmd(args):
         )
         raise
 
-def get_protein_jobs(config_path):
-    """Get job counts per protein"""
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
-    
-    protein_jobs = {}
-    for protein_id, protein_config in config.get('proteins', {}).items():
-        total = 0
-        sequence_length = len(protein_config['sequence'])
-        
-        # Count iterative masking jobs
-        if protein_config.get('iterative_masking', {}).get('enabled', False):
-            # Each position for WT
-            total += sequence_length
-            # Each position for each mutation
-            mutations = protein_config['iterative_masking'].get('mutations', [])
-            total += len(mutations) * sequence_length
-        
-        # Count apriori masking jobs
-        if protein_config.get('apriori_masking', {}).get('enabled', False):
-            experiments = protein_config['apriori_masking'].get('experiments', [])
-            for exp in experiments:
-                conditions = exp.get('conditions', [])
-                total += len(conditions)
-                
-        protein_jobs[protein_id] = total
-    
-    return protein_jobs
-
-def get_completed_jobs_by_protein(base_path):
-    """Get completed jobs count per protein"""
-    base_path = Path(base_path)
-    completed = {}
-    
-    # Function to check a directory for prediction files
-    def check_directory(path):
-        h5_files = list(path.glob("*.h5"))
-        npz_files = list(path.glob("*.npz"))
-        return len(h5_files) > 0 or len(npz_files) > 0
-    
-    # Check each protein directory
-    for protein_dir in base_path.iterdir():
-        if not protein_dir.is_dir():
-            continue
-            
-        protein_id = protein_dir.name
-        completed[protein_id] = 0
-        
-        # Check compressed directories recursively
-        for compressed_dir in protein_dir.rglob("**/out/compressed"):
-            if compressed_dir.is_dir() and check_directory(compressed_dir):
-                completed[protein_id] += 1
-    
-    return completed
-
-def create_stats_table(total_proteins, completed_jobs, running_jobs, pending_jobs, failed_jobs=0, protein_progress=None):
-    """Create the statistics table with per-protein progress"""
-    stats_table = Table(show_header=False, box=None, padding=(0, 2))
-    
-    # Overall progress
-    stats_table.add_row("[bold]Total Jobs[/bold]", str(total_proteins))
-    stats_table.add_row("[bold]Completed[/bold]", f"[green]{completed_jobs}[/green]")
-    stats_table.add_row("[bold]Running[/bold]", f"[yellow]{running_jobs}[/yellow]")
-    stats_table.add_row("[bold]Pending[/bold]", f"[blue]{pending_jobs}[/blue]")
-    
-    if failed_jobs > 0:
-        stats_table.add_row("[bold]Failed[/bold]", f"[red]{failed_jobs}[/red]")
-    
-    # Overall completion percentage
-    if total_proteins > 0:
-        percentage = (completed_jobs / total_proteins) * 100
-        stats_table.add_row(
-            "[bold]Overall Progress[/bold]",
-            f"[cyan]{percentage:.1f}%[/cyan]"
-        )
-    
-    # Add separator
-    stats_table.add_row("", "")
-    stats_table.add_row("[bold]Per-Protein Progress[/bold]", "")
-    
-    # Add per-protein progress
-    if protein_progress:
-        for protein_id, (completed, total) in protein_progress.items():
-            if total > 0:
-                percentage = (completed / total) * 100
-                progress_bar = "━" * int(percentage/5) + "─" * (20 - int(percentage/5))
-                stats_table.add_row(
-                    f"[bold]{protein_id}[/bold]",
-                    f"{progress_bar} [cyan]{percentage:.1f}%[/cyan] ({completed}/{total})"
-                )
-    
-    return stats_table
-
-def create_jobs_table(jobs):
-    """Create the active jobs table"""
-    # Sort jobs: RUNNING first, then PENDING, then others
-    def job_sort_key(job):
-        state_order = {
-            'RUNNING': 0,
-            'PENDING': 1,
-            'FAILED': 2,
-            'COMPLETED': 3
-        }
-        return (state_order.get(job['state'], 99), job['id'])
-    
-    sorted_jobs = sorted(jobs, key=job_sort_key)
-    
-    active_jobs_table = Table(
-        "Job ID",
-        "Name",
-        "State",
-        "Runtime",
-        "Reason",
-        title="Active Jobs",
-        expand=True,
-        show_header=True,
-        header_style="bold blue"
-    )
-    
-    # Set column widths and justify
-    active_jobs_table.columns[0].width = 10  # Job ID
-    active_jobs_table.columns[1].width = 30  # Name
-    active_jobs_table.columns[2].width = 10  # State
-    active_jobs_table.columns[3].width = 10  # Runtime
-    active_jobs_table.columns[4].width = 20  # Reason
-    
-    # Set column justify
-    active_jobs_table.columns[0].justify = "right"
-    active_jobs_table.columns[1].justify = "left"
-    active_jobs_table.columns[2].justify = "center"
-    active_jobs_table.columns[3].justify = "right"
-    active_jobs_table.columns[4].justify = "left"
-    
-    for job in sorted_jobs:
-        state_color = {
-            'RUNNING': 'green',
-            'PENDING': 'yellow',
-            'FAILED': 'red',
-            'COMPLETED': 'blue'
-        }.get(job['state'], 'white')
-        
-        # Truncate job name if too long
-        name = job['name']
-        if len(name) > 27:
-            name = name[:24] + "..."
-        
-        active_jobs_table.add_row(
-            job['id'],
-            name,
-            f"[{state_color}]{job['state']}[/{state_color}]",
-            job['runtime'],
-            job['reason'][:17] + "..." if len(job['reason']) > 20 else job['reason']
-        )
-    return active_jobs_table
-
 def status_cmd(args):
     """Show status of running AlphaMask experiments."""
     try:
@@ -704,152 +563,13 @@ def status_cmd(args):
         from rich.progress import BarColumn, Progress, TextColumn
         from rich.table import Table
         from rich.console import Group
-        import subprocess
-        import re
         from datetime import datetime, timedelta
         import os
         from pathlib import Path
 
-        def get_slurm_jobs():
-            """Get SLURM job information"""
-            # Only get current jobs from squeue
-            cmd = ["squeue", "--me", "--format=%i|%j|%T|%M|%l|%R"]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            jobs = []
-            
-            # Process current jobs
-            for line in result.stdout.strip().split('\n'):
-                if '|' in line:
-                    job_id, name, state, runtime, timelimit, reason = line.split('|')
-                    # Skip header line
-                    if job_id == "JOBID":
-                        continue
-                    # Skip batch jobs
-                    if name.endswith('.batch'):
-                        continue
-                        
-                    jobs.append({
-                        'id': job_id,
-                        'name': name,
-                        'state': state,
-                        'runtime': runtime,
-                        'timelimit': timelimit,
-                        'reason': reason
-                    })
-            
-            return jobs
-
-        def parse_config(config_path):
-            """Parse protein config to get total expected jobs"""
-            with open(config_path) as f:
-                config = yaml.safe_load(f)
-            
-            total_jobs = 0
-            for protein_id, protein_config in config.get('proteins', {}).items():
-                sequence_length = len(protein_config['sequence'])
-                
-                # Count iterative masking jobs
-                if protein_config.get('iterative_masking', {}).get('enabled', False):
-                    # Each position for WT
-                    total_jobs += sequence_length
-                    
-                    # Each position for each mutation
-                    mutations = protein_config['iterative_masking'].get('mutations', [])
-                    total_jobs += len(mutations) * sequence_length
-                
-                # Count apriori masking jobs
-                if protein_config.get('apriori_masking', {}).get('enabled', False):
-                    experiments = protein_config['apriori_masking'].get('experiments', [])
-                    for exp in experiments:
-                        conditions = exp.get('conditions', [])
-                        total_jobs += len(conditions)
-                
-                # Count frustra masking jobs
-                if protein_config.get('frustra_masking', {}).get('enabled', False):
-                    total_jobs += 1  # One job per protein for frustra masking
-            
-            logger.debug(f"Total expected jobs: {total_jobs}")
-            return total_jobs
-
-        def get_completed_jobs(base_path):
-            """Get number of completed jobs by checking output directories recursively"""
-            base_path = Path(base_path)
-            completed = 0
-            seen_jobs = set()  # Track unique job names
-            
-            # Function to check a directory for prediction files
-            def check_directory(path):
-                h5_files = list(path.glob("*.h5"))
-                npz_files = list(path.glob("*.npz"))
-                return len(h5_files) > 0 or len(npz_files) > 0
-            
-            # Check all experiment directories recursively
-            for protein_dir in base_path.iterdir():
-                if not protein_dir.is_dir():
-                    continue
-                    
-                # Look in iterative/WT/out/compressed and other experiment directories
-                for compressed_dir in protein_dir.rglob("**/out/compressed"):
-                    if compressed_dir.is_dir() and check_directory(compressed_dir):
-                        # Get the job name from the parent directory structure
-                        job_path = compressed_dir.relative_to(protein_dir)
-                        job_name = job_path.parts[-3]  # Get the name from the directory structure
-                        
-                        if job_name not in seen_jobs:
-                            completed += 1
-                            seen_jobs.add(job_name)
-                            logger.debug(f"Found completed job: {job_name} in {compressed_dir}")
-                
-                # Also check apriori masking results
-                for compressed_dir in protein_dir.rglob("**/apriori/**/compressed"):
-                    if compressed_dir.is_dir() and check_directory(compressed_dir):
-                        job_name = compressed_dir.parent.parent.name
-                        if job_name not in seen_jobs:
-                            completed += 1
-                            seen_jobs.add(job_name)
-                            logger.debug(f"Found completed job: {job_name} in {compressed_dir}")
-            
-            logger.debug(f"Total completed jobs: {completed}")
-            return completed
-
-        def create_status_layout():
-            """Create the layout for status display"""
-            layout = Layout()
-            layout.split_column(
-                Layout(name="header", size=3),
-                Layout(name="main"),
-                Layout(name="footer", size=3)
-            )
-            layout["main"].split_row(
-                Layout(name="left"),
-                Layout(name="right")
-            )
-            return layout
-
-        def get_job_counts(jobs):
-            """Get accurate counts of jobs in different states"""
-            running = 0
-            pending = 0
-            completed = 0
-            failed = 0
-            
-            # Count jobs by state
-            for job in jobs:
-                state = job['state']
-                if state == 'RUNNING':
-                    running += 1
-                elif state == 'PENDING':
-                    pending += 1
-                elif state == 'COMPLETED':
-                    completed += 1
-                elif state == 'FAILED':
-                    failed += 1
-            
-            return running, pending, completed, failed
-
         # Initial setup
         layout = create_status_layout()
-        total_proteins = parse_config(args.config)
+        total_proteins = parse_config_for_total_jobs(args.config)
 
         # Create progress bar
         progress = Progress(
@@ -871,11 +591,11 @@ def status_cmd(args):
                     # Get job counts
                     jobs = get_slurm_jobs()
                     running_jobs, pending_jobs, slurm_completed, failed_jobs = get_job_counts(jobs)
-                    completed_jobs = get_completed_jobs(args.path)
+                    completed_jobs = get_completed_jobs_count(args.path)
                     
                     # Get per-protein progress
                     protein_jobs = get_protein_jobs(args.config)
-                    completed_by_protein = get_completed_jobs_by_protein(args.path)
+                    completed_by_protein = get_completed_jobs_by_protein(args.path, args.config)
                     
                     protein_progress = {
                         protein_id: (completed_by_protein.get(protein_id, 0), total)
@@ -883,7 +603,7 @@ def status_cmd(args):
                     }
                     
                     # Update components
-                    progress.update(total_task, completed=completed_jobs)
+                    progress.update(total_task, completed=completed_jobs, total=total_proteins)
                     
                     stats_table = create_stats_table(
                         total_proteins, 
@@ -891,7 +611,9 @@ def status_cmd(args):
                         running_jobs, 
                         pending_jobs, 
                         failed_jobs,
-                        protein_progress=protein_progress
+                        protein_progress=protein_progress,
+                        jobs=jobs,
+                        args=args
                     )
                     
                     # Update header
@@ -917,18 +639,12 @@ def status_cmd(args):
                     layout["right"].update(Panel(active_jobs_table))
                     
                     # Update footer
-                    if running_jobs > 0:
-                        avg_runtime = "2h"  # You could calculate this from completed jobs
-                        est_completion = datetime.now() + timedelta(hours=2)
-                        footer_text = f"Estimated completion: {est_completion.strftime('%Y-%m-%d %H:%M:%S')}"
-                    else:
-                        footer_text = "No running jobs to estimate completion time"
-                    layout["footer"].update(Panel(footer_text))
+                    layout["footer"].update(Panel(""))
         else:
             # Single update mode
             jobs = get_slurm_jobs()
             running_jobs, pending_jobs, slurm_completed, failed_jobs = get_job_counts(jobs)
-            completed_jobs = get_completed_jobs(args.path)
+            completed_jobs = get_completed_jobs_count(args.path)
             
             # Update all components once
             layout["header"].update(Panel(
@@ -937,9 +653,18 @@ def status_cmd(args):
                 style="blue"
             ))
             
-            progress.update(total_task, completed=completed_jobs)
+            progress.update(total_task, completed=completed_jobs, total=total_proteins)
             
-            stats_table = create_stats_table(total_proteins, completed_jobs, running_jobs, pending_jobs, failed_jobs)
+            stats_table = create_stats_table(
+                total_proteins, 
+                completed_jobs, 
+                running_jobs, 
+                pending_jobs, 
+                failed_jobs,
+                protein_progress=protein_progress,
+                jobs=jobs,
+                args=args
+            )
             left_panel = Panel(
                 Group(
                     progress,
@@ -953,13 +678,7 @@ def status_cmd(args):
             active_jobs_table = create_jobs_table(jobs)
             layout["right"].update(Panel(active_jobs_table))
             
-            if running_jobs > 0:
-                avg_runtime = "2h"
-                est_completion = datetime.now() + timedelta(hours=2)
-                footer_text = f"Estimated completion: {est_completion.strftime('%Y-%m-%d %H:%M:%S')}"
-            else:
-                footer_text = "No running jobs to estimate completion time"
-            layout["footer"].update(Panel(footer_text))
+            layout["footer"].update(Panel(""))
             
             console.print(layout)
 
