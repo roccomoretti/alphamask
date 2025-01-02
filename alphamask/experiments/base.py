@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Tuple
 from pathlib import Path
 import logging
+import yaml
 
 from ..utils.slurm import SlurmJobManager, SlurmJobConfig
 from ..utils.types import ExperimentConfig
@@ -144,8 +145,8 @@ class Control:
             ]:
                 logger.info(f"[DRY RUN] Would create directory: {dir_path}")
     
-    def create_experiment_config(self, condition: Condition) -> ExperimentConfig:
-        """Create ExperimentConfig for a specific condition"""
+    def create_experiment_config(self, condition: Condition) -> Tuple[ExperimentConfig, str]:
+        """Create experiment configuration for a condition"""
         # Create a unique name for this condition
         condition_name = f"{self.name}_{condition.mask}_{condition.mutate}"
         
@@ -168,15 +169,18 @@ class Control:
         # Create the config
         config = ExperimentConfig(
             sequence=self.protein_config.sequence,
-            jobname_prefix=condition_name,
+            jobname_prefix=self.name,
             parent_path=str(self.working_dir),
-            positions=experiment_positions if condition.mask else [],
+            pipeline_type=pipeline_type,
+            positions=experiment_positions,
             mutations=mutations,
             num_recycles=self.defaults.get('num_recycles', 2),
             num_seeds=self.defaults.get('num_seeds', 2),
-            setup_path=str(self.slurm_config.setup_path),
-            pipeline_type=pipeline_type
+            setup_path=str(self.slurm_config.setup_path)
         )
+        
+        # Create job name
+        job_name = f"{self.name}_{condition.mask}_{condition.mutate}"
         
         # Save the config to a file or log it in dry run mode
         config_path = self.config_dir / f"config_{condition_name}.yaml"
@@ -192,25 +196,25 @@ class Control:
             logger.info(f"[DRY RUN] - Mutations: {config.mutations}")
             logger.info(f"[DRY RUN] - Pipeline type: {config.pipeline_type}")
         
-        return config
+        return config, job_name
     
     def run(self) -> bool:
         """Run control experiments for all conditions"""
         try:
-            for condition in self.conditions:
-                config = self.create_experiment_config(condition)
-                
-                job_manager = SlurmJobManager(
-                    experiment_config=config,
-                    slurm_config=self.slurm_config,
-                    working_dir=str(self.working_dir)
-                )
-                
-                success, failed_jobs = job_manager.run_experiment()
-                if not success:
-                    logger.error(f"Failed to run condition {condition}: {failed_jobs}")
-                    return False
-            return True
+            config, job_name = self.create_experiment_config(
+                Condition(mask=False, mutate=False)
+            )
+            
+            job_manager = SlurmJobManager(
+                experiment_config=config,
+                slurm_config=self.slurm_config,
+                working_dir=str(self.working_dir),
+                job_name=job_name
+            )
+            
+            success, failed_jobs = job_manager.run_experiment()
+            return success
+            
         except Exception as e:
             logger.error(f"Error running control: {str(e)}")
             return False
@@ -247,61 +251,326 @@ class IterativeExperiment(BaseExperiment):
     
     def setup(self) -> None:
         """Set up iterative masking experiment"""
-        # Create a controls subdirectory specifically for iterative experiments
-        self.controls_dir = self.working_dir / "controls"
-        if not self.dry_run:
-            self.controls_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            logger.info(f"[DRY RUN] Would create directory: {self.controls_dir}")
-
-        # Add vanilla control with compression config
-        self.controls.append(Control(
-            "vanilla",
-            self.protein_config,
-            self.slurm_config,
-            [Condition(mask=False, mutate=False)],
-            working_dir=self.controls_dir,
-            dry_run=self.dry_run,
-            schema_path=self.schema_path,
-            compression_config=self.compression_config
-        ))
+        # Create directories for iterative masking
+        self.working_dir.mkdir(parents=True, exist_ok=True)
         
-        # Add mutation controls
+        # Create WT directory
+        wt_dir = self.working_dir / "WT"
+        wt_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get sequence length for masking positions
+        sequence_length = len(self.protein_config.sequence)
+        
+        # Create configs directory for position-specific configs
+        configs_dir = wt_dir / "configs"
+        configs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create WT configs for each position
+        for pos in range(1, sequence_length + 1):
+            config = {
+                "sequence": self.protein_config.sequence,
+                "jobname_prefix": f"WT_pos_{pos}",
+                "parent_path": str(wt_dir),
+                "setup_path": str(self.slurm_config.setup_path),
+                "pipeline_type": "masking",
+                "masking_mode": "list",
+                "mask_msa": True,
+                "mask_deletion_matrix": True,
+                "cols": [pos],
+                "mask_identity": self.protein_config.iterative_masking.mask_token,
+                "num_recycles": self.defaults.get('num_recycles', 2),
+                "num_seeds": self.defaults.get('num_seeds', 2)
+            }
+            
+            config_path = configs_dir / f"config_pos_{pos}.yaml"
+            with open(config_path, 'w') as f:
+                yaml.dump(config, f)
+        
+        # Handle mutations
         for mutation_set in self.protein_config.iterative_masking.mutations:
-            self.controls.append(Control(
-                f"mutation_{'_'.join(mutation_set)}",
-                self.protein_config,
-                self.slurm_config,
-                [Condition(mask=False, mutate=True)],
-                working_dir=self.controls_dir,
-                dry_run=self.dry_run,
-                schema_path=self.schema_path
-            ))
+            # Create directory for mutation(s)
+            mutation_name = '_'.join(mutation_set)
+            mutation_dir = self.working_dir / mutation_name
+            mutation_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create configs directory for mutation
+            mut_configs_dir = mutation_dir / "configs"
+            mut_configs_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create configs for each position with mutation
+            for pos in range(1, sequence_length + 1):
+                config = {
+                    "sequence": self.protein_config.sequence,
+                    "jobname_prefix": f"{mutation_name}_pos_{pos}",
+                    "parent_path": str(mutation_dir),
+                    "setup_path": str(self.slurm_config.setup_path),
+                    "pipeline_type": "mutate_and_mask",
+                    "masking_mode": "list",
+                    "mask_msa": True,
+                    "mask_deletion_matrix": True,
+                    "cols": [pos],
+                    "mask_identity": self.protein_config.iterative_masking.mask_token,
+                    "mutations": mutation_set,
+                    "use_wt_msa": True,
+                    "wt_msa_path": self.working_dir / "WT/in/msa.a3m",
+                    "custom_a3m_path": self.working_dir / "WT/in/msa.a3m",
+                    "msa_method": "custom_a3m",
+                    "num_recycles": self.defaults.get('num_recycles', 2),
+                    "num_seeds": self.defaults.get('num_seeds', 2),
+                    "copies": self.defaults.get('copies', 1),
+                    "pair_mode": self.defaults.get('pair_mode', 'unpaired_paired'),
+                    "cov": self.defaults.get('cov', 75),
+                    "id": self.defaults.get('id', 90),
+                    "qid": self.defaults.get('qid', 0),
+                    "do_not_filter": self.defaults.get('do_not_filter', False),
+                    "template_mode": self.defaults.get('template_mode', 'none'),
+                    "pdb": self.defaults.get('pdb', ''),
+                    "chain": self.defaults.get('chain', 'A'),
+                    "rm_template_seq": self.defaults.get('rm_template_seq', False),
+                    "propagate_to_copies": self.defaults.get('propagate_to_copies', True),
+                    "do_not_align": self.defaults.get('do_not_align', False),
+                    "model_type": self.defaults.get('model_type', 'monomer (ptm)'),
+                    "rank_by": self.defaults.get('rank_by', 'auto'),
+                    "debug": self.defaults.get('debug', False),
+                    "use_initial_guess": self.defaults.get('use_initial_guess', False),
+                    "num_msa": self.defaults.get('num_msa', 512),
+                    "num_extra_msa": self.defaults.get('num_extra_msa', 1024),
+                    "use_cluster_profile": self.defaults.get('use_cluster_profile', True),
+                    "model": self.defaults.get('model', 'all'),
+                    "recycle_early_stop_tolerance": self.defaults.get('recycle_early_stop_tolerance', 0.0),
+                    "select_best_across_recycles": self.defaults.get('select_best_across_recycles', False),
+                    "use_mlm": self.defaults.get('use_mlm', False),
+                    "use_dropout": self.defaults.get('use_dropout', False),
+                    "seed": self.defaults.get('seed', 0),
+                    "show_images": self.defaults.get('show_images', False),
+                    "cols_range": self.defaults.get('cols_range', [])
+                }
+                
+                config_path = mut_configs_dir / f"config_pos_{pos}.yaml"
+                with open(config_path, 'w') as f:
+                    yaml.dump(config, f)
     
     def submit(self) -> bool:
-        """Submit iterative masking experiment jobs to SLURM"""
-        self.validate()
-        self.setup()
-        
-        # Run controls first
-        for control in self.controls:
-            if not control.run():
-                return False
-        
-        # Submit main experiment
-        config = self._create_config()
-        
-        job_manager = SlurmJobManager(
-            experiment_config=config,
-            slurm_config=self.slurm_config,
-            working_dir=str(self.working_dir)
-        )
-        
-        success, failed_jobs = job_manager.run_experiment()
-        return success
+        """Submit iterative masking experiment jobs"""
+        try:
+            # Ensure working directory exists
+            self.working_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create standard subdirectories at root level
+            for subdir in ["configs", "scripts", "logs", "in", "out", "schema"]:
+                (self.working_dir / subdir).mkdir(parents=True, exist_ok=True)
+            
+            # Create MSA directory at root level
+            (self.working_dir / "in" / "msa").mkdir(parents=True, exist_ok=True)
+            
+            # Create WT directory with its subdirectories
+            wt_dir = self.working_dir / "WT"
+            wt_dir.mkdir(parents=True, exist_ok=True)
+            
+            for subdir in ["configs", "scripts", "logs", "in", "out", "schema"]:
+                (wt_dir / subdir).mkdir(parents=True, exist_ok=True)
+            
+            # Create MSA directory for WT
+            (wt_dir / "in" / "msa").mkdir(parents=True, exist_ok=True)
+            (wt_dir / "out" / "pdbs").mkdir(parents=True, exist_ok=True)
+            
+            # Create WT config and position-specific configs
+            sequence_length = len(self.protein_config.sequence)
+            
+            # Create WT position-specific configs
+            for pos in range(1, sequence_length + 1):
+                config = {
+                    "sequence": self.protein_config.sequence,
+                    "jobname": f"WT_pos_{pos}",
+                    "parent_path": str(wt_dir),
+                    "setup_path": str(self.slurm_config.setup_path),
+                    "pipeline_type": "masking",
+                    "masking_mode": "list",
+                    "mask_msa": True,
+                    "mask_deletion_matrix": True,
+                    "cols": [pos],
+                    "mask_identity": self.protein_config.iterative_masking.mask_token,
+                    "num_recycles": self.defaults.get('num_recycles', 2),
+                    "num_seeds": self.defaults.get('num_seeds', 2),
+                    # Add all required default values
+                    "unified_memory": self.defaults.get('unified_memory', False),
+                    "copies": self.defaults.get('copies', 1),
+                    "msa_method": "custom_a3m",
+                    "custom_a3m_path": str(wt_dir / "in" / "msa" / "msa.a3m"),
+                    "pair_mode": self.defaults.get('pair_mode', 'unpaired_paired'),
+                    "cov": self.defaults.get('cov', 75),
+                    "id": self.defaults.get('id', 90),
+                    "qid": self.defaults.get('qid', 0),
+                    "do_not_filter": self.defaults.get('do_not_filter', False),
+                    "template_mode": self.defaults.get('template_mode', 'none'),
+                    "pdb": self.defaults.get('pdb', ''),
+                    "chain": self.defaults.get('chain', 'A'),
+                    "rm_template_seq": self.defaults.get('rm_template_seq', False),
+                    "propagate_to_copies": self.defaults.get('propagate_to_copies', True),
+                    "do_not_align": self.defaults.get('do_not_align', False),
+                    "model_type": self.defaults.get('model_type', 'monomer (ptm)'),
+                    "rank_by": self.defaults.get('rank_by', 'auto'),
+                    "debug": self.defaults.get('debug', False),
+                    "use_initial_guess": self.defaults.get('use_initial_guess', False),
+                    "num_msa": self.defaults.get('num_msa', 512),
+                    "num_extra_msa": self.defaults.get('num_extra_msa', 1024),
+                    "use_cluster_profile": self.defaults.get('use_cluster_profile', True),
+                    "model": self.defaults.get('model', 'all'),
+                    "recycle_early_stop_tolerance": self.defaults.get('recycle_early_stop_tolerance', 0.0),
+                    "select_best_across_recycles": self.defaults.get('select_best_across_recycles', False),
+                    "use_mlm": self.defaults.get('use_mlm', False),
+                    "use_dropout": self.defaults.get('use_dropout', False),
+                    "seed": self.defaults.get('seed', 0),
+                    "show_images": self.defaults.get('show_images', False),
+                    "cols_range": self.defaults.get('cols_range', [])
+                }
+                
+                config_path = wt_dir / "configs" / f"WT_config_pos_{pos}.yaml"
+                with open(config_path, 'w') as f:
+                    yaml.dump(config, f)
+                logger.info(f"Created WT position config at {config_path}")
+            
+            # Create mutation directories and their position-specific configs
+            for mutation_set in self.protein_config.iterative_masking.mutations:
+                mutation_name = '_'.join(mutation_set)
+                mutation_dir = self.working_dir / mutation_name
+                mutation_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Create standard subdirectories for mutation
+                for subdir in ["configs", "scripts", "logs", "in", "out", "schema"]:
+                    (mutation_dir / subdir).mkdir(parents=True, exist_ok=True)
+                
+                # Create MSA directory for mutation
+                (mutation_dir / "in" / "msa").mkdir(parents=True, exist_ok=True)
+                (mutation_dir / "out" / "pdbs").mkdir(parents=True, exist_ok=True)
+                
+                # Create position-specific configs for mutation
+                for pos in range(1, sequence_length + 1):
+                    config = {
+                        "sequence": self.protein_config.sequence,
+                        "jobname": f"{mutation_name}_pos_{pos}",
+                        "parent_path": str(mutation_dir),
+                        "setup_path": str(self.slurm_config.setup_path),
+                        "pipeline_type": "mutate_and_mask",
+                        "masking_mode": "list",
+                        "mask_msa": True,
+                        "mask_deletion_matrix": True,
+                        "cols": [pos],
+                        "mask_identity": self.protein_config.iterative_masking.mask_token,
+                        "mutations": mutation_set,
+                        "use_wt_msa": True,
+                        "wt_msa_path": str(wt_dir / "in" / "msa" / "msa.a3m"),
+                        "custom_a3m_path": str(wt_dir / "in" / "msa" / "msa.a3m"),
+                        "msa_method": "custom_a3m",
+                        "num_recycles": self.defaults.get('num_recycles', 2),
+                        "num_seeds": self.defaults.get('num_seeds', 2),
+                        # Add all required default values
+                        "unified_memory": self.defaults.get('unified_memory', False),
+                        "copies": self.defaults.get('copies', 1),
+                        "pair_mode": self.defaults.get('pair_mode', 'unpaired_paired'),
+                        "cov": self.defaults.get('cov', 75),
+                        "id": self.defaults.get('id', 90),
+                        "qid": self.defaults.get('qid', 0),
+                        "do_not_filter": self.defaults.get('do_not_filter', False),
+                        "template_mode": self.defaults.get('template_mode', 'none'),
+                        "pdb": self.defaults.get('pdb', ''),
+                        "chain": self.defaults.get('chain', 'A'),
+                        "rm_template_seq": self.defaults.get('rm_template_seq', False),
+                        "propagate_to_copies": self.defaults.get('propagate_to_copies', True),
+                        "do_not_align": self.defaults.get('do_not_align', False),
+                        "model_type": self.defaults.get('model_type', 'monomer (ptm)'),
+                        "rank_by": self.defaults.get('rank_by', 'auto'),
+                        "debug": self.defaults.get('debug', False),
+                        "use_initial_guess": self.defaults.get('use_initial_guess', False),
+                        "num_msa": self.defaults.get('num_msa', 512),
+                        "num_extra_msa": self.defaults.get('num_extra_msa', 1024),
+                        "use_cluster_profile": self.defaults.get('use_cluster_profile', True),
+                        "model": self.defaults.get('model', 'all'),
+                        "recycle_early_stop_tolerance": self.defaults.get('recycle_early_stop_tolerance', 0.0),
+                        "select_best_across_recycles": self.defaults.get('select_best_across_recycles', False),
+                        "use_mlm": self.defaults.get('use_mlm', False),
+                        "use_dropout": self.defaults.get('use_dropout', False),
+                        "seed": self.defaults.get('seed', 0),
+                        "show_images": self.defaults.get('show_images', False),
+                        "cols_range": self.defaults.get('cols_range', [])
+                    }
+                    
+                    config_path = mutation_dir / "configs" / f"{mutation_name}_config_pos_{pos}.yaml"
+                    with open(config_path, 'w') as f:
+                        yaml.dump(config, f)
+                    logger.info(f"Created mutation position config at {config_path}")
+            
+            # Initialize job manager for submitting jobs
+            job_manager = SlurmJobManager(
+                experiment_config=ExperimentConfig(
+                    sequence=self.protein_config.sequence,
+                    jobname_prefix=self.name,
+                    parent_path=str(self.working_dir),
+                    setup_path=str(self.slurm_config.setup_path),
+                    pipeline_type="default"
+                ),
+                slurm_config=self.slurm_config,
+                working_dir=str(self.working_dir),
+                job_name=self.name
+            )
+            
+            # Submit WT position-specific jobs
+            for pos in range(1, sequence_length + 1):
+                config_path = wt_dir / "configs" / f"WT_config_pos_{pos}.yaml"
+                job_id = job_manager.submit_job(
+                    str(config_path),
+                    f"WT_pos_{pos}"
+                )
+                logger.info(f"Submitted WT position {pos} job with ID: {job_id}")
+            
+            # Submit mutation position-specific jobs
+            for mutation_set in self.protein_config.iterative_masking.mutations:
+                mutation_name = '_'.join(mutation_set)
+                for pos in range(1, sequence_length + 1):
+                    config_path = self.working_dir / mutation_name / "configs" / f"{mutation_name}_config_pos_{pos}.yaml"
+                    job_id = job_manager.submit_job(
+                        str(config_path),
+                        f"{mutation_name}_pos_{pos}"
+                    )
+                    logger.info(f"Submitted {mutation_name} position {pos} job with ID: {job_id}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to submit experiment: {str(e)}")
+            return False
 
-    def _create_config(self) -> ExperimentConfig:
-        """Create configuration for iterative masking experiment"""
+    def _create_wt_config(self) -> ExperimentConfig:
+        """Create configuration for WT job"""
+        config = {
+            "sequence": self.protein_config.sequence,
+            "jobname_prefix": f"{self.name}_WT",
+            "parent_path": str(self.working_dir / "WT"),
+            "num_recycles": self.defaults.get('num_recycles', 2),
+            "num_seeds": self.defaults.get('num_seeds', 2),
+            "setup_path": str(self.slurm_config.setup_path),
+            "pipeline_type": "default"
+        }
+        
+        return ExperimentConfig(**config)
+
+    def _create_mutation_config(self, mutation_set: List[str]) -> ExperimentConfig:
+        """Create configuration for mutation job"""
+        mutation_name = "_".join(mutation_set)
+        config = {
+            "sequence": self.protein_config.sequence,
+            "jobname_prefix": f"{self.name}_mutation_{mutation_name}",
+            "parent_path": str(self.working_dir / mutation_name),
+            "num_recycles": self.defaults.get('num_recycles', 2),
+            "num_seeds": self.defaults.get('num_seeds', 2),
+            "setup_path": str(self.slurm_config.setup_path),
+            "pipeline_type": "mutate"
+        }
+        
+        return ExperimentConfig(**config)
+
+    def _create_masking_config(self) -> ExperimentConfig:
+        """Create configuration for iterative masking job"""
         config = {
             "sequence": self.protein_config.sequence,
             "jobname_prefix": f"{self.name}",
@@ -309,8 +578,7 @@ class IterativeExperiment(BaseExperiment):
             "num_recycles": self.defaults.get('num_recycles', 2),
             "num_seeds": self.defaults.get('num_seeds', 2),
             "setup_path": str(self.slurm_config.setup_path),
-            "pipeline_type": "mutate_and_mask",
-            "mutations": self.protein_config.iterative_masking.mutations
+            "pipeline_type": "mutate_and_mask"
         }
         
         return ExperimentConfig(**config)

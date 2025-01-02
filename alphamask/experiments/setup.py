@@ -82,7 +82,6 @@ class ExperimentSetup:
                 # Create experiment type directories if enabled
                 if protein_config.iterative_masking.enabled:
                     (protein_dir / "iterative").mkdir(parents=True, exist_ok=True)
-                    (protein_dir / "iterative" / "controls").mkdir(parents=True, exist_ok=True)
                 
                 if protein_config.frustra_masking.enabled:
                     (protein_dir / "frustra").mkdir(parents=True, exist_ok=True)

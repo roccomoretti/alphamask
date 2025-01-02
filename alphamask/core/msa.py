@@ -14,7 +14,14 @@ import jax
 import jax.numpy as jnp
 import logging
 
+# Configure logging
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+plt.set_loglevel('warning')  # This will suppress matplotlib debug messages
+
 from colabdesign.af.contrib import predict
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 def is_colab_environment():
     """Check if code is running in Google Colab."""
@@ -50,6 +57,9 @@ class PrepInputs:
         overwrite (bool): Whether to overwrite existing files
         show_figures (bool): Whether to show figures
         use_parent_dir (bool): Whether to use parent directory for job directories
+        use_wt_msa (bool): Whether to use WT MSA
+        wt_msa_path (Optional[Path]): Path to WT MSA
+        mutations (List[str]): List of mutations
     """
     
     def __init__(
@@ -59,6 +69,9 @@ class PrepInputs:
         copies: int = 1,
         msa_method: str = "mmseqs2",
         custom_a3m_path: Union[str, Path] = "",
+        use_wt_msa: bool = False,
+        wt_msa_path: Optional[Path] = None,
+        mutations: Optional[List[str]] = None,
         pair_mode: str = "unpaired",
         cov: int = 0,
         id: int = 90,
@@ -128,6 +141,9 @@ class PrepInputs:
         self.overwrite = overwrite
         self.show_figures = show_figures
         self.use_parent_dir = use_parent_dir
+        self.use_wt_msa = use_wt_msa
+        self.wt_msa_path = Path(wt_msa_path) if wt_msa_path else None
+        self.mutations = mutations or []
         
         # Initialize other attributes
         self.input_opts = {}
@@ -245,24 +261,21 @@ class PrepInputs:
 
     def get_msa(self) -> None:
         """Get Multiple Sequence Alignment."""
-        def run_mmseqs2_wrapper(*args, **kwargs):
-            kwargs["user_agent"] = "colabdesign/gamma"
-            return run_mmseqs2(*args, **kwargs)
-
         # Create input directory based on use_parent_dir flag
         if self.use_parent_dir:
             input_path = self.parent_path / "in"
-            self.logger.info(f"Using parent directory for MSA: {input_path}")
         else:
             input_path = self.parent_path / self.jobname / "in"
-            self.logger.info(f"Using job-specific directory for MSA: {input_path}")
         
         input_path.mkdir(parents=True, exist_ok=True)
         
         self.Ls = [len(x) for x in self.u_sequences]
         
-        if self.msa_method == "mmseqs2":
-            self._handle_mmseqs2_msa(input_path, run_mmseqs2_wrapper)
+        # Check if we should use WT MSA
+        if self.use_wt_msa and self.wt_msa_path and self.wt_msa_path.exists():
+            self._handle_wt_msa(input_path)
+        elif self.msa_method == "mmseqs2":
+            self._handle_mmseqs2_msa(input_path)
         elif self.msa_method == "single_sequence":
             self._handle_single_sequence_msa()
         elif self.msa_method.startswith("custom_"):
@@ -272,17 +285,13 @@ class PrepInputs:
 
         if len(self.msa) > 1 and self.show_figures:
             predict.plot_msa(self.msa, self.Ls)
-            plt.savefig(
-                input_path / "msa_feats.png",
-                dpi=200,
-                bbox_inches="tight",
-            )
+            plt.savefig(input_path / "msa_feats.png", dpi=200, bbox_inches="tight")
             if "ipykernel" in sys.modules:
                 plt.show()
             else:
                 plt.close()
 
-    def _handle_mmseqs2_msa(self, input_path: Path, run_mmseqs2_wrapper: Any) -> None:
+    def _handle_mmseqs2_msa(self, input_path: Path) -> None:
         """Handle MMseqs2 MSA generation."""
         msa_file = input_path / "msa.a3m"
         if msa_file.exists():
@@ -588,6 +597,31 @@ class PrepInputs:
         for directory in [job_dir, input_dir, output_dir, pdb_dir, pkl_dir]:
             directory.mkdir(parents=True, exist_ok=True)
             self.logger.debug(f"Created directory: {directory}")
+
+    def _handle_wt_msa(self, input_path: Path) -> None:
+        """Handle WT MSA reuse and modification."""
+        msa_file = input_path / "msa.a3m"
+        
+        # Copy WT MSA to input directory
+        if not msa_file.exists():
+            shutil.copy2(self.wt_msa_path, msa_file)
+            logger.info(f"Copied WT MSA from {self.wt_msa_path} to {msa_file}")
+        
+        # If mutations are specified, modify the MSA
+        if self.mutations:
+            try:
+                modify_msa_first_sequence(
+                    msa_path=msa_file,
+                    mutations=self.mutations
+                )
+                logger.info(f"Modified MSA with mutations: {self.mutations}")
+            except Exception as e:
+                logger.error(f"Failed to modify MSA with mutations: {e}")
+                raise
+        
+        # Parse the MSA
+        self.msa, self.deletion_matrix = predict.parse_a3m(msa_file)
+        logger.info(f"Using WT MSA with {len(self.msa)} sequences")
 
 class MSAUtils:
     """
@@ -901,6 +935,7 @@ class MSAUtils:
             coupling_scores = jnp.sqrt(
                 jnp.square(reshaped_correlations[:, :20, :, :20]).sum((1, 3))
             )
+            
             # Zero out diagonal (self-contacts)
             positions = jnp.arange(sequence_length)
             coupling_scores = coupling_scores.at[positions, positions].set(0)
@@ -920,3 +955,130 @@ class MSAUtils:
         
         # Convert JAX array to numpy array for compatibility
         return np.array(_calculate_coevolution(msa_array)) 
+
+def modify_msa_first_sequence(
+    msa_path: Path,
+    mutations: List[str],
+    output_path: Optional[Path] = None
+) -> Path:
+    """
+    Modifies the first sequence of an MSA file with given mutations.
+    Only used when use_wt_msa=True in config.
+    
+    Args:
+        msa_path: Path to the original MSA file
+        mutations: List of mutations in format ["A123B", ...]
+        output_path: Optional path for modified MSA. If None, modifies in place.
+    
+    Returns:
+        Path to the modified MSA file
+    
+    Raises:
+        ValueError: If mutations are invalid or MSA file is malformed
+        FileNotFoundError: If MSA file doesn't exist
+    """
+    try:
+        # Validate input
+        if not msa_path.exists():
+            raise FileNotFoundError(f"MSA file not found: {msa_path}")
+        
+        # If output path is provided, copy MSA first
+        if output_path:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(msa_path, output_path)
+            working_path = output_path
+        else:
+            working_path = msa_path
+        
+        # Read MSA file
+        with open(working_path, 'r') as f:
+            lines = f.readlines()
+        
+        if not lines:
+            raise ValueError(f"Empty MSA file: {working_path}")
+        
+        # Get first sequence (after description line)
+        if not lines[0].startswith('>'):
+            raise ValueError(f"Invalid MSA format, missing description line: {working_path}")
+        
+        description_line = lines[0]
+        sequence_line = lines[1]
+        
+        # Convert sequence to list for easier modification
+        sequence = list(sequence_line.strip())
+        
+        # Apply mutations
+        for mutation in mutations:
+            if len(mutation) < 3:
+                raise ValueError(f"Invalid mutation format: {mutation}")
+            
+            try:
+                # Parse mutation (format: A123B)
+                orig_aa = mutation[0]
+                new_aa = mutation[-1]
+                pos = int(mutation[1:-1]) - 1  # Convert to 0-based indexing
+                
+                # Validate position
+                if pos < 0 or pos >= len(sequence):
+                    raise ValueError(f"Position {pos+1} out of range for sequence")
+                
+                # Validate original amino acid
+                if sequence[pos] != orig_aa:
+                    raise ValueError(
+                        f"Mismatch at position {pos+1}: expected {orig_aa}, found {sequence[pos]}"
+                    )
+                
+                # Apply mutation
+                sequence[pos] = new_aa
+                logger.debug(f"Applied mutation {mutation} at position {pos+1}")
+                
+            except ValueError as e:
+                raise ValueError(f"Error processing mutation {mutation}: {str(e)}")
+        
+        # Write modified MSA
+        with open(working_path, 'w') as f:
+            f.write(description_line)  # Write original description
+            f.write(''.join(sequence) + '\n')  # Write modified sequence
+            # Write remaining lines unchanged
+            f.writelines(lines[2:])
+        
+        logger.info(f"Successfully modified MSA with mutations: {mutations}")
+        return working_path
+        
+    except Exception as e:
+        logger.error(f"Error modifying MSA: {str(e)}")
+        raise
+
+def copy_msa_with_mutations(
+    source_msa: Path,
+    target_dir: Path,
+    mutations: List[str]
+) -> Path:
+    """
+    Copies an MSA file to a new location and applies mutations to the first sequence.
+    
+    Args:
+        source_msa: Path to source MSA file
+        target_dir: Directory to copy modified MSA to
+        mutations: List of mutations to apply
+    
+    Returns:
+        Path to the new modified MSA file
+    """
+    try:
+        # Create target directory
+        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create target path
+        target_path = target_dir / "msa.a3m"
+        
+        # Copy and modify MSA
+        return modify_msa_first_sequence(
+            msa_path=source_msa,
+            mutations=mutations,
+            output_path=target_path
+        )
+        
+    except Exception as e:
+        logger.error(f"Error copying and modifying MSA: {str(e)}")
+        raise 

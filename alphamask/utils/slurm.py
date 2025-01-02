@@ -625,63 +625,111 @@ singularity exec --nv \\
         configs_dir = self.working_dir / "configs"
         configs_dir.mkdir(parents=True, exist_ok=True)
         
+        # Get MSA from WT directory if it exists
+        wt_msa_path = self.working_dir.parent / "WT" / "in" / "msa" / "msa.a3m"
+        if wt_msa_path.exists():
+            logger.debug(f"Using WT MSA from: {wt_msa_path}")
+            self.experiment_config.msa_method = "custom_a3m"
+            self.experiment_config.custom_a3m_path = str(wt_msa_path)
+        
         for pos in range(1, sequence_length + 1):
             # Create config for this position
             config = self.experiment_config.to_dict()
-            config["cols"] = [pos]
+            config["cols"] = [pos]  # Mask one position at a time
+            config["positions"] = [pos]  # Also set positions for consistency
+            
             # Set masking configuration
-            config["masking_mode"] = "list"  # Use list mode for single position masking
+            config["masking_mode"] = "list"
             config["mask_msa"] = True
             config["mask_deletion_matrix"] = True
-            config["debug"] = DEFAULTS.get('debug', False)
-            config["pipeline_type"] = "masking"  # Ensure masking pipeline is used
-            config["seed"] = DEFAULTS.get('seed', 0)
-            config["num_seeds"] = DEFAULTS.get('num_seeds', 2)  # Use default from defaults.yaml
+            config["mask_token"] = "X"
+            config["pipeline_type"] = "masking"
             
+            # Set other parameters
+            config["num_seeds"] = self.defaults.get('num_seeds', 2)
+            config["num_recycles"] = self.defaults.get('num_recycles', 2)
+            
+            # Create unique job name for this position
+            job_name = f"{self.experiment_config.jobname_prefix}_pos_{pos}"
+            
+            # Save config
             config_path = configs_dir / f"config_pos_{pos}.yaml"
             with open(config_path, 'w') as f:
                 yaml.dump(config, f)
             
-            job_id = self.submit_job(
-                str(config_path),
-                f"{self.experiment_config.jobname_prefix}_pos_{pos}"
-            )
-            
+            # Submit job
+            job_id = self.submit_job(str(config_path), job_name)
             if job_id:
                 job_ids.append(job_id)
+                logger.debug(f"Submitted masking job for position {pos} with ID {job_id}")
+            else:
+                logger.error(f"Failed to submit job for position {pos}")
         
         return job_ids
 
-    def submit_iterative_mask_mutate_jobs(self) -> List[int]:
-        """Submit jobs for iterative masking and mutation experiments"""
-        job_ids = []
-        positions = self.experiment_config.positions or range(1, len(self.experiment_config.sequence) + 1)
-        
-        for pos in positions:
-            # Create config for this position
+    def submit_wt_job(self) -> Optional[int]:
+        """Submit wild-type prediction job"""
+        try:
+            # Create config directory
+            configs_dir = self.working_dir / "configs"
+            configs_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create WT config
             config = self.experiment_config.to_dict()
-            config["cols"] = [pos]
+            config["pipeline_type"] = "default"
+            config["jobname_prefix"] = "WT"
             
-            # Add mutations if specified
-            if self.experiment_config.mutations:
-                config["mutations"] = self.experiment_config.mutations
-                mutations_str = "_".join(self.experiment_config.mutations)
-            else:
-                mutations_str = str(pos)
-            
-            config_path = self.working_dir / "configs" / f"config_pos_{pos}_mut_{mutations_str}.yaml"
+            # Save config
+            config_path = configs_dir / "config_wt.yaml"
             with open(config_path, 'w') as f:
                 yaml.dump(config, f)
             
-            job_id = self.submit_job(
-                str(config_path),
-                f"{self.experiment_config.jobname_prefix}_pos_{pos}_mut_{mutations_str}"
-            )
-            
+            # Submit job
+            job_id = self.submit_job(str(config_path), "WT")
             if job_id:
-                job_ids.append(job_id)
-        
-        return job_ids
+                logger.debug(f"Submitted WT job with ID {job_id}")
+            return job_id
+            
+        except Exception as e:
+            logger.error(f"Error submitting WT job: {str(e)}")
+            return None
+
+    def submit_mutation_job(self, mutations: List[str]) -> Optional[int]:
+        """Submit job for a specific mutation or set of mutations"""
+        try:
+            # Create config directory
+            configs_dir = self.working_dir / "configs"
+            configs_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Get WT MSA path
+            wt_msa_path = self.working_dir.parent / "WT" / "in" / "msa" / "msa.a3m"
+            
+            # Create mutation config
+            config = self.experiment_config.to_dict()
+            config["pipeline_type"] = "mutate"
+            config["mutations"] = mutations
+            config["jobname_prefix"] = "_".join(mutations)
+            
+            # Use WT MSA if available
+            if wt_msa_path.exists():
+                config["msa_method"] = "custom_a3m"
+                config["custom_a3m_path"] = str(wt_msa_path)
+            
+            # Save config
+            config_path = configs_dir / f"config_{'_'.join(mutations)}.yaml"
+            with open(config_path, 'w') as f:
+                yaml.dump(config, f)
+            
+            # Submit job
+            job_name = f"mutation_{'_'.join(mutations)}"
+            job_id = self.submit_job(str(config_path), job_name)
+            if job_id:
+                logger.debug(f"Submitted mutation job {job_name} with ID {job_id}")
+            return job_id
+            
+        except Exception as e:
+            logger.error(f"Error submitting mutation job: {str(e)}")
+            return None
 
     def submit_position_masking_jobs(self) -> List[int]:
         """Submit position masking jobs"""
@@ -879,18 +927,18 @@ singularity exec --nv \\
         )
 
     def run_experiment(self) -> Tuple[bool, List[str]]:
-        """Handle the SLURM-specific aspects of job submission"""
+        """Run the experiment based on configuration type"""
         try:
             # Handle MSA if needed
             if self.experiment_config.msa_method == "mmseqs2":
                 self._handle_msa()
             
-            # Now save the config with any MSA updates
+            # Save the config with any MSA updates
             configs_dir = Path(self.working_dir) / "configs"
             configs_dir.mkdir(parents=True, exist_ok=True)
             config_path = configs_dir / f"config_{self.job_name}.yaml"
             
-            # Save config with all updates (including MSA settings if modified)
+            # Save config with all updates
             self.experiment_config.save(config_path)
             logger.debug(f"Saved config with all settings at: {config_path}")
             
