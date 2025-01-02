@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import Enum
 import logging
 from datetime import datetime
+import json
 
 from .types import ExperimentConfig
 from .params import load_defaults
@@ -164,12 +165,14 @@ class SlurmJobManager:
         logger.debug(f"Script directory: {self.script_dir}")
         logger.debug(f"Log directory: {self.log_dir}")
 
-    def create_job_script(self, config_path: str, job_name: str) -> str:
+    def create_job_script(self, config_path: str, job_name: str, script_dir: Optional[str] = None, log_dir: Optional[str] = None) -> str:
         """Create a SLURM job script for the given configuration.
 
         Args:
             config_path (str): Path to the configuration file
             job_name (str): Name of the job
+            script_dir (Optional[str]): Directory to save the script in, defaults to self.script_dir
+            log_dir (Optional[str]): Directory to save the log files in, defaults to self.log_dir
 
         Returns:
             str: Path to the created job script
@@ -179,68 +182,234 @@ class SlurmJobManager:
             if self.experiment_config.msa_method == "mmseqs2":
                 self._handle_msa()
             
+            # Use provided script_dir if available, otherwise use default
+            script_dir_path = Path(script_dir) if script_dir else self.script_dir
+            script_dir_path.mkdir(parents=True, exist_ok=True)
+            
             # Create script with existing config
-            script_path = self._generate_script(config_path, job_name)
+            script_path = self._generate_script(config_path, job_name, script_dir_path, log_dir)
             return script_path
             
         except Exception as e:
             logger.error(f"Error creating job script: {str(e)}")
             raise
 
+    def _get_protein_root_dir(self) -> Path:
+        """Get the root directory for the protein experiments.
+        
+        This method identifies the root directory for a protein by looking for
+        the hash identifier in the path (e.g., i89_897a1).
+        
+        Returns:
+            Path: The root directory path for the protein experiments
+        
+        Raises:
+            ValueError: If the protein root directory cannot be determined
+        """
+        try:
+            working_dir = Path(self.working_dir)
+            # Look for hash identifier in path components
+            for parent in working_dir.parents:
+                # Check for pattern like i89_897a1
+                if any(part for part in parent.parts if '_' in part and any(c.isdigit() for c in part)):
+                    return parent
+            raise ValueError(f"Could not determine protein root directory from {self.working_dir}")
+        except Exception as e:
+            logger.error(f"Error determining protein root directory: {e}")
+            raise
+
+    def _validate_msa(self, msa_file: Path) -> bool:
+        """Validate MSA file format and content.
+        
+        Args:
+            msa_file (Path): Path to the MSA file to validate
+        
+        Returns:
+            bool: True if MSA is valid, False otherwise
+        """
+        try:
+            if not msa_file.exists():
+                logger.debug(f"MSA file does not exist: {msa_file}")
+                return False
+            
+            # Check file size
+            if msa_file.stat().st_size == 0:
+                logger.debug(f"MSA file is empty: {msa_file}")
+                return False
+            
+            # Basic format validation
+            with open(msa_file) as f:
+                # Check header
+                first_line = f.readline().strip()
+                if not first_line.startswith('>'):
+                    logger.debug(f"MSA file does not start with '>': {msa_file}")
+                    return False
+                
+                # Check sequence
+                second_line = f.readline().strip()
+                if len(second_line) != len(self.experiment_config.sequence):
+                    logger.debug(f"MSA sequence length mismatch. Expected {len(self.experiment_config.sequence)}, got {len(second_line)}")
+                    return False
+                
+                # Check if sequence matches
+                if second_line.upper() != self.experiment_config.sequence.upper():
+                    logger.debug(f"MSA sequence does not match input sequence")
+                    return False
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error validating MSA file: {e}")
+            return False
+
+    def _create_flag_file(self, flag_file: Path) -> None:
+        """Create a flag file with process information.
+        
+        Args:
+            flag_file (Path): Path to the flag file to create
+        """
+        try:
+            import os
+            import time
+            import json
+            
+            info = {
+                'pid': os.getpid(),
+                'timestamp': time.time(),
+                'hostname': os.uname().nodename
+            }
+            
+            with open(flag_file, 'w') as f:
+                json.dump(info, f)
+            
+            logger.debug(f"Created MSA flag file at {flag_file}")
+        except Exception as e:
+            logger.error(f"Error creating flag file: {e}")
+            raise
+
     def _handle_msa(self):
-        """Handle MSA generation and sharing for apriori experiments"""
-        if "apriori" not in str(self.working_dir):
-            return
+        """Handle MSA generation and sharing for all experiment types.
         
-        # Get the protein base directory (e.g., /work/.../my_experiments/her2)
-        protein_dir = Path(self.working_dir).parent.parent
-        
-        # Create shared MSA directory at protein level
-        shared_msa_dir = protein_dir / "in" / "msa"
-        shared_msa_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Define MSA and flag file paths
-        msa_file = shared_msa_dir / "msa.a3m"
-        flag_file = shared_msa_dir / ".msa_in_progress"
-        
-        if msa_file.exists():
-            logger.debug(f"MSA file exists at {msa_file}, using it directly.")
+        This method ensures that MSA generation is coordinated across all
+        experiment types (apriori, iterative, frustra) and that MSAs are
+        properly shared and reused when possible.
+        """
+        try:
+            # Get protein root directory
+            protein_dir = self._get_protein_root_dir()
+            logger.debug(f"Using protein root directory: {protein_dir}")
+            
+            # Create shared MSA directory
+            shared_msa_dir = protein_dir / "in" / "msa"
+            shared_msa_dir.mkdir(parents=True, exist_ok=True)
+            logger.debug(f"Using shared MSA directory: {shared_msa_dir}")
+            
+            # Define MSA and flag file paths
+            msa_file = shared_msa_dir / "msa.a3m"
+            flag_file = shared_msa_dir / ".msa_in_progress"
+            
+            # Check if MSA exists and is valid
+            if msa_file.exists() and self._validate_msa(msa_file):
+                logger.info(f"Using existing MSA file at {msa_file}")
+                self.experiment_config.msa_method = "custom_a3m"
+                self.experiment_config.custom_a3m_path = str(msa_file)
+                return
+            
+            # Handle MSA generation with proper locking
+            if flag_file.exists():
+                logger.info("Another process is generating MSA, waiting...")
+                self._wait_for_msa(msa_file, flag_file)
+            else:
+                # Create flag file with process ID and timestamp
+                self._create_flag_file(flag_file)
+                try:
+                    logger.info("Generating new MSA...")
+                    self._generate_msa(msa_file, flag_file, shared_msa_dir)
+                finally:
+                    # Always clean up flag file
+                    if flag_file.exists():
+                        flag_file.unlink()
+                        logger.debug("Removed MSA flag file")
+            
+            # Final validation
+            if not self._validate_msa(msa_file):
+                raise RuntimeError(f"Generated MSA at {msa_file} failed validation")
+            
+            # Update experiment config
             self.experiment_config.msa_method = "custom_a3m"
             self.experiment_config.custom_a3m_path = str(msa_file)
-            return
-        
-        # Wait for MSA if another job is generating it
-        if flag_file.exists():
-            self._wait_for_msa(msa_file, flag_file)
-        else:
-            self._generate_msa(msa_file, flag_file, shared_msa_dir)
+            logger.info(f"Successfully set up MSA at {msa_file}")
+            
+        except Exception as e:
+            logger.error(f"Error handling MSA: {e}")
+            raise
 
     def _wait_for_msa(self, msa_file: Path, flag_file: Path):
-        """Wait for MSA generation to complete"""
+        """Wait for MSA generation to complete.
+        
+        Args:
+            msa_file (Path): Path to the MSA file
+            flag_file (Path): Path to the flag file
+        
+        Raises:
+            TimeoutError: If waiting for MSA exceeds timeout
+            FileNotFoundError: If MSA file is not found after waiting
+        """
         logger.debug("Waiting for MSA generation to complete...")
         wait_start = time.time()
         timeout = 3600  # 1 hour timeout
+        check_interval = 10  # Check every 10 seconds
         
         while flag_file.exists():
-            if msa_file.exists():
+            if msa_file.exists() and self._validate_msa(msa_file):
                 try:
                     flag_file.unlink()
-                    logger.debug("MSA found and flag file removed.")
+                    logger.debug("MSA found and flag file removed")
                     break
                 except Exception as e:
                     logger.warning(f"Could not remove flag file: {e}")
             
             if time.time() - wait_start > timeout:
-                raise TimeoutError("MSA generation timed out")
+                raise TimeoutError("MSA generation timed out after 1 hour")
             
-            time.sleep(10)
+            # Check if the process that created the flag file is still running
+            try:
+                with open(flag_file) as f:
+                    info = json.load(f)
+                    pid = info.get('pid')
+                    if pid and not self._is_process_running(pid):
+                        logger.warning(f"MSA generation process {pid} no longer running")
+                        flag_file.unlink()
+                        break
+            except Exception as e:
+                logger.warning(f"Error checking MSA generation process: {e}")
+            
+            time.sleep(check_interval)
         
-        if not msa_file.exists():
-            raise FileNotFoundError("MSA file not found after waiting")
+        if not msa_file.exists() or not self._validate_msa(msa_file):
+            raise FileNotFoundError("Valid MSA file not found after waiting")
         
-        logger.debug("MSA generation completed.")
-        self.experiment_config.msa_method = "custom_a3m"
-        self.experiment_config.custom_a3m_path = str(msa_file)
+        logger.debug("MSA generation completed")
+
+    def _is_process_running(self, pid: int) -> bool:
+        """Check if a process is running.
+        
+        Args:
+            pid (int): Process ID to check
+        
+        Returns:
+            bool: True if process is running, False otherwise
+        """
+        try:
+            import psutil
+            return psutil.pid_exists(pid)
+        except ImportError:
+            # Fallback if psutil is not available
+            try:
+                import os
+                os.kill(pid, 0)
+                return True
+            except OSError:
+                return False
 
     def _generate_msa(self, msa_file: Path, flag_file: Path, shared_msa_dir: Path):
         """Generate MSA for the experiment"""
@@ -279,15 +448,15 @@ class SlurmJobManager:
         self.experiment_config.msa_method = "custom_a3m"
         self.experiment_config.custom_a3m_path = str(msa_file)
 
-    def _generate_script(self, config_path: str, job_name: str) -> str:
+    def _generate_script(self, config_path: str, job_name: str, script_dir: Path, log_dir: Optional[str] = None) -> str:
         """Generate the actual SLURM script"""
         # Convert all paths to absolute paths
         config_path = str(Path(config_path).resolve())
         container_path = str(Path(self.slurm_config.container_path).resolve())
         working_dir = str(Path(self.working_dir).resolve())
         
-        # Create script path
-        script_path_obj = Path(self.script_dir) / f"{job_name}.sh"
+        # Create script path in the provided directory
+        script_path_obj = script_dir / f"{job_name}.sh"
         script_path_abs = str(script_path_obj.resolve())
         
         # Copy schema file to local directory
@@ -307,13 +476,14 @@ class SlurmJobManager:
         except (shutil.Error, IOError) as e:
             raise RuntimeError(f"Failed to copy schema file: {e}")
 
-        # Create script content
+        # Create script content with log directory
         script_content = self._get_script_content(
             job_name=job_name,
             working_dir=working_dir,
             config_path=config_path,
             local_schema_path=str(local_schema_path),
-            container_path=container_path
+            container_path=container_path,
+            log_dir=log_dir
         )
         
         # Write script to file
@@ -327,12 +497,22 @@ class SlurmJobManager:
         return script_path_abs
 
     def _get_script_content(self, job_name: str, working_dir: str, config_path: str, 
-                           local_schema_path: str, container_path: str) -> str:
+                           local_schema_path: str, container_path: str, log_dir: Optional[str] = None) -> str:
         """Generate the content of the SLURM script"""
+        # Use provided log_dir or default to self.log_dir
+        log_dir_path = Path(log_dir) if log_dir else self.log_dir
+        log_dir_path.mkdir(parents=True, exist_ok=True)
+        
+        # Read pipeline type from config file
+        with open(config_path, 'r') as f:
+            config_data = yaml.safe_load(f)
+            pipeline_type = config_data.get('pipeline_type', 'default')
+            logger.debug(f"Using pipeline type from config: {pipeline_type}")
+        
         return f"""#!/bin/bash
 #SBATCH --job-name={job_name}
-#SBATCH --output={str(Path(self.log_dir) / f"{job_name}.out")}
-#SBATCH --error={str(Path(self.log_dir) / f"{job_name}.err")}
+#SBATCH --output={str(log_dir_path / f"{job_name}.out")}
+#SBATCH --error={str(log_dir_path / f"{job_name}.err")}
 #SBATCH --time=24:00:00
 #SBATCH --mem=300000
 #SBATCH --cpus-per-task=1
@@ -462,7 +642,7 @@ if [ ! -d "$CONDA_ENV_PATH" ]; then
 fi
 
 # Run the command using singularity
-echo "Running command: {self.slurm_config.script_path} --config {config_path} --schema {local_schema_path} --pipeline {self.experiment_config.pipeline_type or 'default'}"
+echo "Running command: {self.slurm_config.script_path} --config {config_path} --schema {local_schema_path} --pipeline {pipeline_type}"
 
 # Export the conda environment path inside the container
 echo "Using container's built-in environment..."
@@ -475,10 +655,16 @@ singularity exec --nv \\
     ~/.conda/envs/alphamask/bin/alphamask predict-job \\
     --config {config_path} \\
     --schema {local_schema_path} \\
-    --pipeline {self.experiment_config.pipeline_type or "default"}
+    --pipeline {pipeline_type}
 """
 
-    def submit_job(self, config_path: str, job_name: str) -> Optional[int]:
+    def submit_job(
+        self, 
+        config_path: str, 
+        job_name: str,
+        script_dir: Optional[str] = None,
+        log_dir: Optional[str] = None
+    ) -> Optional[int]:
         """Submit a job either to SLURM or run it directly"""
         try:
             # Log input parameters
@@ -488,8 +674,26 @@ singularity exec --nv \\
             # Use the config path that was passed in
             config_path = Path(config_path)
             
-            # Create the job script
-            script_path = self.create_job_script(str(config_path), job_name)
+            # Use provided script_dir and log_dir or default to working_dir/scripts and working_dir/logs
+            script_dir = Path(script_dir) if script_dir else Path(self.working_dir) / "scripts"
+            log_dir = Path(log_dir) if log_dir else Path(self.working_dir) / "logs"
+            
+            # Ensure directories exist
+            script_dir.mkdir(parents=True, exist_ok=True)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create script path and log paths
+            script_path = script_dir / f"{job_name}.sh"
+            stdout_path = log_dir / f"{job_name}.out"
+            stderr_path = log_dir / f"{job_name}.err"
+            
+            # Create the job script with the specific script directory and log directory
+            script_path = self.create_job_script(
+                str(config_path), 
+                job_name, 
+                str(script_dir),
+                str(log_dir)
+            )
             logger.debug(f"Created job script at: {script_path}")
 
             if self.has_slurm:

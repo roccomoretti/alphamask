@@ -15,7 +15,7 @@ logging.basicConfig(
 logger = logging.getLogger("alphamask.cli.main")
 logger.setLevel(logging.DEBUG)
 
-from .commands import setup_cmd, submit_jobs_cmd, help_cmd, predict_cmd, predict_job_cmd, extract_pdbs_cmd
+from .commands import setup_cmd, submit_jobs_cmd, help_cmd, predict_cmd, predict_job_cmd, extract_pdbs_cmd, status_cmd
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the main argument parser"""
@@ -252,6 +252,31 @@ def create_parser() -> argparse.ArgumentParser:
         help="Extract only the best prediction"
     )
     
+    # Status command
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show status of running experiments",
+        parents=[parent_parser]
+    )
+    status_parser.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Path to protein configuration file"
+    )
+    status_parser.add_argument(
+        "--path",
+        type=str,
+        required=True,
+        help="Base path for experiments"
+    )
+    status_parser.add_argument(
+        "--refresh",
+        type=float,
+        default=5.0,
+        help="Refresh interval in seconds (0 for single update)"
+    )
+    
     return parser
 
 def setup_logging(debug: bool, log_file: str = None, quiet: bool = False):
@@ -320,6 +345,9 @@ def main():
         elif args.command == "extract-pdbs":
             logger.debug("Running extract-pdbs command")
             extract_pdbs_cmd(args)
+        elif args.command == "status":
+            logger.debug("Running status command")
+            status_cmd(args)
         else:
             parser.print_help()
             return 1

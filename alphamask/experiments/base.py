@@ -353,6 +353,31 @@ class IterativeExperiment(BaseExperiment):
     def submit(self) -> bool:
         """Submit iterative masking experiment jobs"""
         try:
+            # Get protein root directory for shared MSA
+            protein_dir = self.working_dir.parent
+            shared_msa_dir = protein_dir / "in" / "msa"
+            shared_msa_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Initialize a temporary job manager to handle MSA generation
+            temp_job_manager = SlurmJobManager(
+                experiment_config=ExperimentConfig(
+                    sequence=self.protein_config.sequence,
+                    jobname_prefix="msa_generation",
+                    parent_path=str(shared_msa_dir.parent),  # Use 'in' directory as parent
+                    setup_path=str(self.slurm_config.setup_path),
+                    pipeline_type="default",
+                    msa_method="mmseqs2"  # Force MSA generation
+                ),
+                slurm_config=self.slurm_config,
+                working_dir=str(shared_msa_dir.parent),  # Use 'in' directory as working dir
+                job_name="msa_generation"
+            )
+            
+            # Generate MSA first
+            logger.info("Generating shared MSA...")
+            temp_job_manager._handle_msa()
+            logger.info("MSA generation complete")
+            
             # Ensure working directory exists
             self.working_dir.mkdir(parents=True, exist_ok=True)
             
@@ -384,7 +409,7 @@ class IterativeExperiment(BaseExperiment):
                     "jobname": f"WT_pos_{pos}",
                     "parent_path": str(wt_dir),
                     "setup_path": str(self.slurm_config.setup_path),
-                    "pipeline_type": "masking",
+                    "pipeline_type": "masking",  # Explicitly set pipeline type for WT
                     "masking_mode": "list",
                     "mask_msa": True,
                     "mask_deletion_matrix": True,
@@ -396,7 +421,7 @@ class IterativeExperiment(BaseExperiment):
                     "unified_memory": self.defaults.get('unified_memory', False),
                     "copies": self.defaults.get('copies', 1),
                     "msa_method": "custom_a3m",
-                    "custom_a3m_path": str(wt_dir / "in" / "msa" / "msa.a3m"),
+                    "custom_a3m_path": str(shared_msa_dir / "msa.a3m"),  # Use shared MSA path
                     "pair_mode": self.defaults.get('pair_mode', 'unpaired_paired'),
                     "cov": self.defaults.get('cov', 75),
                     "id": self.defaults.get('id', 90),
@@ -451,7 +476,7 @@ class IterativeExperiment(BaseExperiment):
                         "jobname": f"{mutation_name}_pos_{pos}",
                         "parent_path": str(mutation_dir),
                         "setup_path": str(self.slurm_config.setup_path),
-                        "pipeline_type": "mutate_and_mask",
+                        "pipeline_type": "mutate_and_mask",  # Explicitly set pipeline type for mutations
                         "masking_mode": "list",
                         "mask_msa": True,
                         "mask_deletion_matrix": True,
@@ -459,8 +484,8 @@ class IterativeExperiment(BaseExperiment):
                         "mask_identity": self.protein_config.iterative_masking.mask_token,
                         "mutations": mutation_set,
                         "use_wt_msa": True,
-                        "wt_msa_path": str(wt_dir / "in" / "msa" / "msa.a3m"),
-                        "custom_a3m_path": str(wt_dir / "in" / "msa" / "msa.a3m"),
+                        "wt_msa_path": str(shared_msa_dir / "msa.a3m"),  # Use shared MSA path
+                        "custom_a3m_path": str(shared_msa_dir / "msa.a3m"),  # Use shared MSA path
                         "msa_method": "custom_a3m",
                         "num_recycles": self.defaults.get('num_recycles', 2),
                         "num_seeds": self.defaults.get('num_seeds', 2),
@@ -507,7 +532,9 @@ class IterativeExperiment(BaseExperiment):
                     jobname_prefix=self.name,
                     parent_path=str(self.working_dir),
                     setup_path=str(self.slurm_config.setup_path),
-                    pipeline_type="default"
+                    pipeline_type="default",  # This doesn't matter as we'll use config-specific pipeline types
+                    msa_method="custom_a3m",  # Use custom MSA method
+                    custom_a3m_path=str(shared_msa_dir / "msa.a3m")  # Use shared MSA path
                 ),
                 slurm_config=self.slurm_config,
                 working_dir=str(self.working_dir),
@@ -519,20 +546,25 @@ class IterativeExperiment(BaseExperiment):
                 config_path = wt_dir / "configs" / f"WT_config_pos_{pos}.yaml"
                 job_id = job_manager.submit_job(
                     str(config_path),
-                    f"WT_pos_{pos}"
+                    f"WT_pos_{pos}",
+                    script_dir=str(wt_dir / "scripts"),
+                    log_dir=str(wt_dir / "logs")
                 )
-                logger.info(f"Submitted WT position {pos} job with ID: {job_id}")
+                logger.debug(f"Submitted WT position {pos} job with ID: {job_id}")
             
             # Submit mutation position-specific jobs
             for mutation_set in self.protein_config.iterative_masking.mutations:
                 mutation_name = '_'.join(mutation_set)
+                mutation_dir = self.working_dir / mutation_name
                 for pos in range(1, sequence_length + 1):
-                    config_path = self.working_dir / mutation_name / "configs" / f"{mutation_name}_config_pos_{pos}.yaml"
+                    config_path = mutation_dir / "configs" / f"{mutation_name}_config_pos_{pos}.yaml"
                     job_id = job_manager.submit_job(
                         str(config_path),
-                        f"{mutation_name}_pos_{pos}"
+                        f"{mutation_name}_pos_{pos}",
+                        script_dir=str(mutation_dir / "scripts"),
+                        log_dir=str(mutation_dir / "logs")
                     )
-                    logger.info(f"Submitted {mutation_name} position {pos} job with ID: {job_id}")
+                    logger.debug(f"Submitted {mutation_name} position {pos} job with ID: {job_id}")
             
             return True
             
@@ -655,8 +687,20 @@ class AprioriExperiment(BaseExperiment):
                 )
     
     def setup(self) -> None:
-        """No separate setup needed as conditions are handled directly in submit"""
-        pass
+        """Set up shared MSA directory and other necessary directories"""
+        # Get protein root directory for shared MSA
+        protein_dir = self.working_dir.parent
+        
+        # Create shared MSA directory at protein level
+        shared_msa_dir = protein_dir / "in" / "msa"
+        shared_msa_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create experiment directories
+        self.working_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create standard subdirectories
+        for subdir in ["configs", "scripts", "logs", "in", "out", "schema"]:
+            (self.working_dir / subdir).mkdir(parents=True, exist_ok=True)
     
     def _create_config(self, experiment: AprioriExperiment, condition: Condition) -> Tuple[ExperimentConfig, str]:
         """Create configuration for a specific a priori experiment condition
@@ -664,6 +708,10 @@ class AprioriExperiment(BaseExperiment):
         Returns:
             Tuple[ExperimentConfig, str]: The config object and job name
         """
+        # Get shared MSA path
+        shared_msa_dir = self.working_dir.parent / "in" / "msa"
+        shared_msa_path = shared_msa_dir / "msa.a3m"
+        
         # Create descriptive name for this condition
         condition_name = f"{'masked' if condition.mask else 'unmasked'}_{'mutated' if condition.mutate else 'unmutated'}"
         
@@ -691,30 +739,61 @@ class AprioriExperiment(BaseExperiment):
         configs_dir.mkdir(parents=True, exist_ok=True)
         
         # Create config with proper masking settings
-        config = ExperimentConfig(
-            sequence=self.protein_config.sequence,
-            jobname_prefix=job_name,  # Use job_name for consistency
-            parent_path=str(condition_dir),
-            positions=positions,
-            cols=positions,
-            mutations=mutations,
-            num_recycles=self.defaults.get('num_recycles', 2),
-            num_seeds=self.defaults.get('num_seeds', 2),
-            setup_path=str(self.slurm_config.setup_path),
-            pipeline_type=pipeline_type,
-            create_control=False,  # Never create controls in condition directories
-            mask_msa=condition.mask,
-            mask_deletion_matrix=condition.mask,
-            masking_mode="list" if condition.mask else "off",
-            mask_identity="X"
-        )
+        config = {
+            "sequence": self.protein_config.sequence,
+            "jobname_prefix": job_name,  # Use job_name for consistency
+            "parent_path": str(condition_dir),
+            "positions": positions,
+            "cols": positions,
+            "mutations": mutations,
+            "num_recycles": self.defaults.get('num_recycles', 2),
+            "num_seeds": self.defaults.get('num_seeds', 2),
+            "setup_path": str(self.slurm_config.setup_path),
+            "pipeline_type": pipeline_type,
+            "create_control": False,  # Never create controls in condition directories
+            "mask_msa": condition.mask,
+            "mask_deletion_matrix": condition.mask,
+            "masking_mode": "list" if condition.mask else "off",
+            "mask_identity": "X",
+            "msa_method": "custom_a3m",  # Always use custom MSA
+            "custom_a3m_path": str(shared_msa_path)  # Use shared MSA path
+        }
         
-        return config, job_name
+        # Create ExperimentConfig instance
+        experiment_config = ExperimentConfig(**config)
+        
+        return experiment_config, job_name
     
     def submit(self) -> bool:
         """Orchestrate the experiment submission process"""
         try:
             self.validate()
+            self.setup()
+            
+            # Get protein root directory for shared MSA
+            protein_dir = self.working_dir.parent
+            shared_msa_dir = protein_dir / "in" / "msa"
+            shared_msa_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Initialize a temporary job manager to handle MSA generation
+            temp_job_manager = SlurmJobManager(
+                experiment_config=ExperimentConfig(
+                    sequence=self.protein_config.sequence,
+                    jobname_prefix="msa_generation",
+                    parent_path=str(shared_msa_dir.parent),  # Use 'in' directory as parent
+                    setup_path=str(self.slurm_config.setup_path),
+                    pipeline_type="default",
+                    msa_method="mmseqs2"  # Force MSA generation
+                ),
+                slurm_config=self.slurm_config,
+                working_dir=str(shared_msa_dir.parent),  # Use 'in' directory as working dir
+                job_name="msa_generation"
+            )
+            
+            # Generate MSA first
+            logger.info("Generating shared MSA...")
+            temp_job_manager._handle_msa()
+            logger.info("MSA generation complete")
             
             # Submit each experiment with its conditions
             success = True
@@ -726,11 +805,24 @@ class AprioriExperiment(BaseExperiment):
                     # Get condition name for directory structure
                     condition_name = f"{'masked' if condition.mask else 'unmasked'}_{'mutated' if condition.mutate else 'unmutated'}"
                     
+                    # Get condition directory paths
+                    condition_dir = self.working_dir / experiment.name / condition_name
+                    script_dir = condition_dir / "scripts"
+                    log_dir = condition_dir / "logs"
+                    
+                    # Create necessary directories
+                    for dir_path in [condition_dir, script_dir, log_dir]:
+                        dir_path.mkdir(parents=True, exist_ok=True)
+                    
+                    # Update config to use shared MSA
+                    config.msa_method = "custom_a3m"
+                    config.custom_a3m_path = str(shared_msa_dir / "msa.a3m")
+                    
                     # Initialize SLURM job manager for this condition
                     job_manager = SlurmJobManager(
                         experiment_config=config,
                         slurm_config=self.slurm_config,
-                        working_dir=str(self.working_dir / experiment.name / condition_name),
+                        working_dir=str(condition_dir),
                         job_name=job_name
                     )
                     
@@ -797,11 +889,22 @@ class FrustraExperiment(BaseExperiment):
             raise ExperimentError("Invalid number of top positions for Frustra analysis")
     
     def setup(self) -> None:
-        """Set up Frustra masking experiment"""
+        """Set up Frustra masking experiment directories and shared MSA"""
+        # Get protein root directory for shared MSA
+        protein_dir = self.working_dir.parent
+        
+        # Create shared MSA directory at protein level
+        shared_msa_dir = protein_dir / "in" / "msa"
+        shared_msa_dir.mkdir(parents=True, exist_ok=True)
+        
         # Create a controls subdirectory specifically for Frustra
         self.controls_dir = self.working_dir / "controls"
         if not self.dry_run:
             self.controls_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create standard subdirectories
+            for subdir in ["configs", "scripts", "logs", "in", "out", "schema"]:
+                (self.working_dir / subdir).mkdir(parents=True, exist_ok=True)
         else:
             logger.info(f"[DRY RUN] Would create directory: {self.controls_dir}")
 
@@ -818,6 +921,10 @@ class FrustraExperiment(BaseExperiment):
     
     def _create_config(self) -> ExperimentConfig:
         """Create configuration for Frustra masking experiment"""
+        # Get shared MSA path
+        shared_msa_dir = self.working_dir.parent / "in" / "msa"
+        shared_msa_path = shared_msa_dir / "msa.a3m"
+        
         config = {
             "sequence": self.protein_config.sequence,
             "jobname_prefix": f"{self.name}",
@@ -826,29 +933,67 @@ class FrustraExperiment(BaseExperiment):
             "num_seeds": self.defaults.get('num_seeds', 2),
             "setup_path": str(self.slurm_config.setup_path),
             "pipeline_type": "masking",
-            "top_positions": self.protein_config.frustra_masking.top_positions
+            "top_positions": self.protein_config.frustra_masking.top_positions,
+            "msa_method": "custom_a3m",  # Always use custom MSA
+            "custom_a3m_path": str(shared_msa_path),  # Use shared MSA path
+            "use_wt_msa": False,  # No mutations in Frustra masking
+            "masking_mode": "list",
+            "mask_msa": True,
+            "mask_deletion_matrix": True,
+            "mask_identity": "X"
         }
         
         return ExperimentConfig(**config)
     
     def submit(self) -> bool:
         """Submit Frustra masking experiment jobs to SLURM"""
-        self.validate()
-        self.setup()
-        
-        # Run controls first
-        for control in self.controls:
-            if not control.run():
-                return False
-        
-        # Submit main experiment
-        config = self._create_config()
-        
-        job_manager = SlurmJobManager(
-            experiment_config=config,
-            slurm_config=self.slurm_config,
-            working_dir=str(self.working_dir)
-        )
-        
-        success, failed_jobs = job_manager.run_experiment()
-        return success
+        try:
+            self.validate()
+            self.setup()
+            
+            # Get protein root directory for shared MSA
+            protein_dir = self.working_dir.parent
+            shared_msa_dir = protein_dir / "in" / "msa"
+            shared_msa_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Initialize a temporary job manager to handle MSA generation
+            temp_job_manager = SlurmJobManager(
+                experiment_config=ExperimentConfig(
+                    sequence=self.protein_config.sequence,
+                    jobname_prefix="msa_generation",
+                    parent_path=str(shared_msa_dir.parent),  # Use 'in' directory as parent
+                    setup_path=str(self.slurm_config.setup_path),
+                    pipeline_type="default",
+                    msa_method="mmseqs2"  # Force MSA generation
+                ),
+                slurm_config=self.slurm_config,
+                working_dir=str(shared_msa_dir.parent),  # Use 'in' directory as working dir
+                job_name="msa_generation"
+            )
+            
+            # Generate MSA first
+            logger.info("Generating shared MSA...")
+            temp_job_manager._handle_msa()
+            logger.info("MSA generation complete")
+            
+            # Run controls first
+            for control in self.controls:
+                if not control.run():
+                    return False
+            
+            # Submit main experiment
+            config = self._create_config()
+            
+            job_manager = SlurmJobManager(
+                experiment_config=config,
+                slurm_config=self.slurm_config,
+                working_dir=str(self.working_dir),
+                job_name=self.name
+            )
+            
+            success, failed_jobs = job_manager.run_experiment()
+            return success
+            
+        except Exception as e:
+            logger.error(f"Failed to submit Frustra experiment: {str(e)}")
+            return False

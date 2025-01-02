@@ -274,12 +274,16 @@ class PrepInputs:
         # Check if we should use WT MSA
         if self.use_wt_msa and self.wt_msa_path and self.wt_msa_path.exists():
             self._handle_wt_msa(input_path)
+            self.logger.info(f"WT MSA used: {self.wt_msa_path}")
         elif self.msa_method == "mmseqs2":
             self._handle_mmseqs2_msa(input_path)
+            self.logger.info(f"MMseqs2 MSA used: {input_path / 'msa.a3m'}")
         elif self.msa_method == "single_sequence":
             self._handle_single_sequence_msa()
+            self.logger.info(f"Single sequence MSA used: {input_path / 'msa.a3m'}")
         elif self.msa_method.startswith("custom_"):
             self._handle_custom_msa(input_path)
+            self.logger.info(f"Custom MSA used: {input_path / 'msa.a3m'}")
         else:
             raise ValueError(f"Unknown MSA method: {self.msa_method}")
 
@@ -343,20 +347,32 @@ class PrepInputs:
         if not self.custom_a3m_path.exists():
             raise FileNotFoundError(f"MSA file not found: {self.custom_a3m_path}")
             
-        # Read and process MSA file
-        with open(self.custom_a3m_path, "r") as file:
-            lines = [line.replace("\x00", "") for line in file.readlines()]
-            input_lines = [line for line in lines if line.strip() and not line.startswith("#")]
-        
         # Create MSA file in input directory
         msa_file = input_path / f"msa.{msa_format}"
         self.logger.info(f"Creating MSA file at: {msa_file}")
         
-        if not msa_file.exists():
-            with open(msa_file, "w") as msa:
-                msa.write("\n".join(input_lines))
-                
+        # For logging purposes log the value of use_wt_msa and mutations
+        self.logger.info(f"use_wt_msa: {self.use_wt_msa}")
+        self.logger.info(f"mutations: {self.mutations}")
+        
+        # Handle mutations if use_wt_msa is True
+        if self.use_wt_msa and self.mutations:
+            self.logger.info(f"Using WT MSA and applying mutations: {self.mutations}")
+            modify_msa_first_sequence(
+                msa_path=self.custom_a3m_path,
+                mutations=self.mutations,
+                output_path=msa_file
+            )
+            self.logger.info(f"Created modified MSA file at: {msa_file}")
+        else:
+            # Just copy the MSA file if no mutations or not using WT MSA
+            shutil.copy2(self.custom_a3m_path, msa_file)
+            self.logger.info(f"Copied MSA file to: {msa_file}")
+        
+        # TODO : Update this is very unsafe and not very easy to debug for the user if it fails
         if msa_format != "a3m":
+            self.logger.info(f"Reformatting MSA from {msa_format} to a3m")
+
             if "hhsuite" not in os.environ["PATH"]:
                 os.environ["PATH"] += f":{self.setup_path/'hhsuite/bin'}:{self.setup_path/'hhsuite/scripts'}"
             os.system(
@@ -600,12 +616,19 @@ class PrepInputs:
 
     def _handle_wt_msa(self, input_path: Path) -> None:
         """Handle WT MSA reuse and modification."""
+        self.logger.info("Handling WT MSA")
         msa_file = input_path / "msa.a3m"
         
         # Copy WT MSA to input directory
         if not msa_file.exists():
             shutil.copy2(self.wt_msa_path, msa_file)
             logger.info(f"Copied WT MSA from {self.wt_msa_path} to {msa_file}")
+        
+        # Log that we have mutations if specified
+        if self.mutations:
+            self.logger.info(f"Mutations specified: {self.mutations}")
+        else:
+            self.logger.info("No mutations specified")
         
         # If mutations are specified, modify the MSA
         if self.mutations:
@@ -1030,7 +1053,7 @@ def modify_msa_first_sequence(
                 
                 # Apply mutation
                 sequence[pos] = new_aa
-                logger.debug(f"Applied mutation {mutation} at position {pos+1}")
+                logger.info(f"Applied mutation {mutation} at position {pos+1}")
                 
             except ValueError as e:
                 raise ValueError(f"Error processing mutation {mutation}: {str(e)}")
