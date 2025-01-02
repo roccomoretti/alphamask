@@ -57,7 +57,6 @@ class PrepInputs:
         overwrite (bool): Whether to overwrite existing files
         show_figures (bool): Whether to show figures
         use_parent_dir (bool): Whether to use parent directory for job directories
-        use_wt_msa (bool): Whether to use WT MSA
         wt_msa_path (Optional[Path]): Path to WT MSA
         mutations (List[str]): List of mutations
     """
@@ -69,7 +68,6 @@ class PrepInputs:
         copies: int = 1,
         msa_method: str = "mmseqs2",
         custom_a3m_path: Union[str, Path] = "",
-        use_wt_msa: bool = False,
         wt_msa_path: Optional[Path] = None,
         mutations: Optional[List[str]] = None,
         pair_mode: str = "unpaired",
@@ -141,7 +139,6 @@ class PrepInputs:
         self.overwrite = overwrite
         self.show_figures = show_figures
         self.use_parent_dir = use_parent_dir
-        self.use_wt_msa = use_wt_msa
         self.wt_msa_path = Path(wt_msa_path) if wt_msa_path else None
         self.mutations = mutations or []
         
@@ -271,11 +268,8 @@ class PrepInputs:
         
         self.Ls = [len(x) for x in self.u_sequences]
         
-        # Check if we should use WT MSA
-        if self.use_wt_msa and self.wt_msa_path and self.wt_msa_path.exists():
-            self._handle_wt_msa(input_path)
-            self.logger.info(f"WT MSA used: {self.wt_msa_path}")
-        elif self.msa_method == "mmseqs2":
+
+        if self.msa_method == "mmseqs2":
             self._handle_mmseqs2_msa(input_path)
             self.logger.info(f"MMseqs2 MSA used: {input_path / 'msa.a3m'}")
         elif self.msa_method == "single_sequence":
@@ -351,23 +345,9 @@ class PrepInputs:
         msa_file = input_path / f"msa.{msa_format}"
         self.logger.info(f"Creating MSA file at: {msa_file}")
         
-        # For logging purposes log the value of use_wt_msa and mutations
-        self.logger.info(f"use_wt_msa: {self.use_wt_msa}")
-        self.logger.info(f"mutations: {self.mutations}")
-        
-        # Handle mutations if use_wt_msa is True
-        if self.use_wt_msa and self.mutations:
-            self.logger.info(f"Using WT MSA and applying mutations: {self.mutations}")
-            modify_msa_first_sequence(
-                msa_path=self.custom_a3m_path,
-                mutations=self.mutations,
-                output_path=msa_file
-            )
-            self.logger.info(f"Created modified MSA file at: {msa_file}")
-        else:
-            # Just copy the MSA file if no mutations or not using WT MSA
-            shutil.copy2(self.custom_a3m_path, msa_file)
-            self.logger.info(f"Copied MSA file to: {msa_file}")
+        # Just copy the MSA file if no mutations or not using WT MSA
+        shutil.copy2(self.custom_a3m_path, msa_file)
+        self.logger.info(f"Copied MSA file to: {msa_file}")
         
         # TODO : Update this is very unsafe and not very easy to debug for the user if it fails
         if msa_format != "a3m":
@@ -978,130 +958,3 @@ class MSAUtils:
         
         # Convert JAX array to numpy array for compatibility
         return np.array(_calculate_coevolution(msa_array)) 
-
-def modify_msa_first_sequence(
-    msa_path: Path,
-    mutations: List[str],
-    output_path: Optional[Path] = None
-) -> Path:
-    """
-    Modifies the first sequence of an MSA file with given mutations.
-    Only used when use_wt_msa=True in config.
-    
-    Args:
-        msa_path: Path to the original MSA file
-        mutations: List of mutations in format ["A123B", ...]
-        output_path: Optional path for modified MSA. If None, modifies in place.
-    
-    Returns:
-        Path to the modified MSA file
-    
-    Raises:
-        ValueError: If mutations are invalid or MSA file is malformed
-        FileNotFoundError: If MSA file doesn't exist
-    """
-    try:
-        # Validate input
-        if not msa_path.exists():
-            raise FileNotFoundError(f"MSA file not found: {msa_path}")
-        
-        # If output path is provided, copy MSA first
-        if output_path:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(msa_path, output_path)
-            working_path = output_path
-        else:
-            working_path = msa_path
-        
-        # Read MSA file
-        with open(working_path, 'r') as f:
-            lines = f.readlines()
-        
-        if not lines:
-            raise ValueError(f"Empty MSA file: {working_path}")
-        
-        # Get first sequence (after description line)
-        if not lines[0].startswith('>'):
-            raise ValueError(f"Invalid MSA format, missing description line: {working_path}")
-        
-        description_line = lines[0]
-        sequence_line = lines[1]
-        
-        # Convert sequence to list for easier modification
-        sequence = list(sequence_line.strip())
-        
-        # Apply mutations
-        for mutation in mutations:
-            if len(mutation) < 3:
-                raise ValueError(f"Invalid mutation format: {mutation}")
-            
-            try:
-                # Parse mutation (format: A123B)
-                orig_aa = mutation[0]
-                new_aa = mutation[-1]
-                pos = int(mutation[1:-1]) - 1  # Convert to 0-based indexing
-                
-                # Validate position
-                if pos < 0 or pos >= len(sequence):
-                    raise ValueError(f"Position {pos+1} out of range for sequence")
-                
-                # Validate original amino acid
-                if sequence[pos] != orig_aa:
-                    raise ValueError(
-                        f"Mismatch at position {pos+1}: expected {orig_aa}, found {sequence[pos]}"
-                    )
-                
-                # Apply mutation
-                sequence[pos] = new_aa
-                logger.info(f"Applied mutation {mutation} at position {pos+1}")
-                
-            except ValueError as e:
-                raise ValueError(f"Error processing mutation {mutation}: {str(e)}")
-        
-        # Write modified MSA
-        with open(working_path, 'w') as f:
-            f.write(description_line)  # Write original description
-            f.write(''.join(sequence) + '\n')  # Write modified sequence
-            # Write remaining lines unchanged
-            f.writelines(lines[2:])
-        
-        logger.info(f"Successfully modified MSA with mutations: {mutations}")
-        return working_path
-        
-    except Exception as e:
-        logger.error(f"Error modifying MSA: {str(e)}")
-        raise
-
-def copy_msa_with_mutations(
-    source_msa: Path,
-    target_dir: Path,
-    mutations: List[str]
-) -> Path:
-    """
-    Copies an MSA file to a new location and applies mutations to the first sequence.
-    
-    Args:
-        source_msa: Path to source MSA file
-        target_dir: Directory to copy modified MSA to
-        mutations: List of mutations to apply
-    
-    Returns:
-        Path to the new modified MSA file
-    """
-    try:
-        # Create target directory
-        target_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create target path
-        target_path = target_dir / "msa.a3m"
-        
-        # Copy and modify MSA
-        return modify_msa_first_sequence(
-            msa_path=source_msa,
-            mutations=mutations,
-            output_path=target_path
-        )
-        
-    except Exception as e:
-        logger.error(f"Error copying and modifying MSA: {str(e)}")
-        raise 

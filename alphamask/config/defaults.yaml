@@ -31,8 +31,8 @@ num_msa: 512
 num_extra_msa: 1024
 use_cluster_profile: true
 model: "all"
-num_recycles: 2
-num_seeds: 2
+num_recycles: 6
+num_seeds: 12
 recycle_early_stop_tolerance: 0.0
 select_best_across_recycles: false
 use_mlm: false

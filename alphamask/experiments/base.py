@@ -311,7 +311,6 @@ class IterativeExperiment(BaseExperiment):
                     "cols": [pos],
                     "mask_identity": self.protein_config.iterative_masking.mask_token,
                     "mutations": mutation_set,
-                    "use_wt_msa": True,
                     "wt_msa_path": self.working_dir / "WT/in/msa.a3m",
                     "custom_a3m_path": self.working_dir / "WT/in/msa.a3m",
                     "msa_method": "custom_a3m",
@@ -483,7 +482,6 @@ class IterativeExperiment(BaseExperiment):
                         "cols": [pos],
                         "mask_identity": self.protein_config.iterative_masking.mask_token,
                         "mutations": mutation_set,
-                        "use_wt_msa": True,
                         "wt_msa_path": str(shared_msa_dir / "msa.a3m"),  # Use shared MSA path
                         "custom_a3m_path": str(shared_msa_dir / "msa.a3m"),  # Use shared MSA path
                         "msa_method": "custom_a3m",
@@ -523,7 +521,7 @@ class IterativeExperiment(BaseExperiment):
                     config_path = mutation_dir / "configs" / f"{mutation_name}_config_pos_{pos}.yaml"
                     with open(config_path, 'w') as f:
                         yaml.dump(config, f)
-                    logger.info(f"Created mutation position config at {config_path}")
+                    logger.debug(f"Created mutation position config at {config_path}")
             
             # Initialize job manager for submitting jobs
             job_manager = SlurmJobManager(
@@ -936,7 +934,6 @@ class FrustraExperiment(BaseExperiment):
             "top_positions": self.protein_config.frustra_masking.top_positions,
             "msa_method": "custom_a3m",  # Always use custom MSA
             "custom_a3m_path": str(shared_msa_path),  # Use shared MSA path
-            "use_wt_msa": False,  # No mutations in Frustra masking
             "masking_mode": "list",
             "mask_msa": True,
             "mask_deletion_matrix": True,

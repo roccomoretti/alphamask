@@ -44,7 +44,6 @@ class IterativeMasking:
     enabled: bool
     mutations: List[List[str]]  # Sets of mutations to test (e.g., [["I89S"], ["I89N"], ["I89S", "L90A"]])
     mask_token: str = "X"       # Token used for masking
-    use_wt_msa: bool = True     # Whether to use WT MSA for all predictions
     msa_reuse: bool = True      # Whether to reuse MSA across jobs
     
     def __post_init__(self):
