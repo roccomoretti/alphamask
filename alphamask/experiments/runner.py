@@ -103,6 +103,15 @@ class ExperimentRunner:
             'compression_config': self.compression_config
         }
         
+        
+        if hasattr(protein_config, 'apriori_masking') and protein_config.apriori_masking.enabled:
+            experiments.append(
+                AprioriExperiment(
+                    working_dir=working_dir / "apriori",
+                    **experiment_kwargs
+                )
+            )
+        
         # Check each experiment type's configuration properly
         if hasattr(protein_config, 'iterative_masking') and protein_config.iterative_masking.enabled:
             experiments.append(
@@ -112,13 +121,7 @@ class ExperimentRunner:
                 )
             )
         
-        if hasattr(protein_config, 'apriori_masking') and protein_config.apriori_masking.enabled:
-            experiments.append(
-                AprioriExperiment(
-                    working_dir=working_dir / "apriori",
-                    **experiment_kwargs
-                )
-            )
+
         
         if hasattr(protein_config, 'frustra_masking') and protein_config.frustra_masking.enabled:
             experiments.append(
@@ -158,14 +161,43 @@ class ExperimentRunner:
             return False
     
     def run_all_experiments(self) -> bool:
-        """Run experiments for all configured proteins"""
+        """Run experiments for all configured proteins, starting with shorter sequences"""
         overall_success = True
         
         try:
-            for protein_id in self.config.proteins:
-                logger.info(f"Starting experiments for protein {protein_id}")
+            # Create a list of (protein_id, length) tuples
+            protein_lengths = [
+                (protein_id, len(self.config.proteins[protein_id].sequence))
+                for protein_id in self.config.proteins
+            ]
+            
+            # Sort by sequence length
+            protein_lengths.sort(key=lambda x: x[1])
+            
+            # Initialize partition manager
+            from ..utils.partition import PartitionManager
+            partition_manager = PartitionManager()
+            
+            # Log initial partition assignment plan
+            logger.info("Initial partition assignment plan:")
+            logger.info(partition_manager.get_usage_summary())
+            
+            # Run experiments in order of increasing length
+            for protein_id, length in protein_lengths:
+                # Get next partition and GPU type
+                partition, gpu_type = partition_manager.get_partition_for_sequence(self.config.proteins[protein_id].sequence)
+                
+                # Update slurm config for this protein
+                self.slurm_config.partition = partition
+                self.slurm_config.gpu_type = gpu_type
+                
+                logger.info(f"Starting experiments for protein {protein_id} (length: {length}) on {partition}/{gpu_type}")
                 if not self.run_protein_experiments(protein_id):
                     overall_success = False
+                
+                # Log updated partition usage after each protein
+                logger.info(f"After processing {protein_id}:")
+                logger.info(partition_manager.get_usage_summary())
             
             return overall_success
         except Exception as e:
@@ -201,11 +233,36 @@ def run_experiments(
         )
         
         if protein_ids:
-            # Run experiments for specific proteins
+            # Sort proteins by sequence length
+            protein_lengths = [
+                (protein_id, len(runner.config.proteins[protein_id].sequence))
+                for protein_id in protein_ids
+            ]
+            protein_lengths.sort(key=lambda x: x[1])
+            
+            # Initialize partition manager
+            from alphamask.utils.partition import PartitionManager
+            partition_manager = PartitionManager()
+            
+            # Log partition details at debug level
+            logger.debug("Initial partition assignment plan:")
+            logger.debug(partition_manager.get_usage_summary())
+            
+            # Run experiments
             success = True
-            for protein_id in protein_ids:
+            for protein_id, length in protein_lengths:
+                partition, gpu_type = partition_manager.get_partition_for_sequence(runner.config.proteins[protein_id].sequence)
+                runner.slurm_config.partition = partition
+                runner.slurm_config.gpu_type = gpu_type
+                
+                logger.info(f"Processing {protein_id} (length: {length}) on {partition}/{gpu_type}")
                 if not runner.run_protein_experiments(protein_id):
                     success = False
+                
+                # Log partition updates at debug level
+                logger.debug(f"After processing {protein_id}:")
+                logger.debug(partition_manager.get_usage_summary())
+            
             return success
         else:
             # Run all experiments

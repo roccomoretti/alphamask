@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import logging
 import traceback
+from typing import Optional
 
 # Configure logging first, before any other imports
 logging.basicConfig(
@@ -15,7 +16,16 @@ logging.basicConfig(
 logger = logging.getLogger("alphamask.cli.main")
 logger.setLevel(logging.DEBUG)
 
-from .commands import setup_cmd, submit_jobs_cmd, help_cmd, predict_cmd, predict_job_cmd, extract_pdbs_cmd, status_cmd
+from .commands import (
+    setup_cmd,
+    submit_jobs_cmd,
+    help_cmd,
+    predict_cmd,
+    predict_job_cmd,
+    extract_pdbs_cmd,
+    status_cmd,
+    analyze_cmd
+)
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the main argument parser"""
@@ -124,16 +134,18 @@ def create_parser() -> argparse.ArgumentParser:
         help="Path to JSON schema"
     )
     run_parser.add_argument(
-        "--partition",
+        "--partitions",
         type=str,
-        default="clara",
-        help="SLURM partition"
+        nargs="+",
+        default=["clara"],
+        help="SLURM partitions to use (e.g., clara paula)"
     )
     run_parser.add_argument(
-        "--gpu-type",
+        "--gpu-types",
         type=str,
-        default="rtx2080ti",
-        help="GPU type to request"
+        nargs="+",
+        default=["rtx2080ti"],
+        help="GPU types to use (e.g., rtx2080ti v100 a30)"
     )
     run_parser.add_argument(
         "--force-local",
@@ -277,20 +289,71 @@ def create_parser() -> argparse.ArgumentParser:
         help="Refresh interval in seconds (0 for single update)"
     )
     
+    # Analysis command
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Analyze RMSD distributions for completed experiments",
+        parents=[parent_parser]
+    )
+    analyze_parser.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Path to protein configuration file"
+    )
+    analyze_parser.add_argument(
+        "--path",
+        type=str,
+        required=True,
+        help="Base path for experiments"
+    )
+    analyze_parser.add_argument(
+        "--proteins",
+        type=str,
+        nargs="*",
+        help="Specific proteins to analyze (default: all)"
+    )
+    analyze_parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        help="Number of parallel processes"
+    )
+    analyze_parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help="Only analyze new results"
+    )
+    analyze_parser.add_argument(
+        "--format",
+        choices=["pdf", "png"],
+        default="pdf",
+        help="Plot output format"
+    )
+    analyze_parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip plot generation"
+    )
+    analyze_parser.add_argument(
+        "--force",
+        action="store_true", 
+        help="Force reanalysis of existing results"
+    )
+    analyze_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing RMSD files and plots"
+    )
+    
     return parser
 
-def setup_logging(debug: bool, log_file: str = None, quiet: bool = False):
-    """Configure logging"""
-    if quiet:
-        # Disable all logging by setting root logger to CRITICAL+1
-        logging.getLogger().setLevel(logging.CRITICAL + 1)
-        return
-    
+def setup_logging(debug: bool = False, log_file: Optional[str] = None, quiet: bool = False) -> None:
+    """Configure logging based on command line arguments."""
+    # Set log level
     log_level = logging.DEBUG if debug else logging.INFO
-    
-    handlers = [logging.StreamHandler()]
-    if log_file:
-        handlers.append(logging.FileHandler(log_file))
+    if quiet:
+        log_level = logging.WARNING
     
     # Configure root logger
     root_logger = logging.getLogger()
@@ -300,13 +363,34 @@ def setup_logging(debug: bool, log_file: str = None, quiet: bool = False):
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
     
-    # Add and configure new handlers
-    for handler in handlers:
-        handler.setFormatter(
-            logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        )
-        root_logger.addHandler(handler)
-
+    # Configure console handler with appropriate format
+    console_handler = logging.StreamHandler()
+    if debug:
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    else:
+        formatter = logging.Formatter('%(message)s')
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+    
+    # Configure file handler if specified
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        root_logger.addHandler(file_handler)
+    
+    # Set specific loggers to appropriate levels
+    logging.getLogger('jax').setLevel(logging.WARNING)
+    logging.getLogger('jax._src').setLevel(logging.WARNING)
+    logging.getLogger('absl').setLevel(logging.WARNING)
+    
+    # Ensure our modules are set to debug level when debug is True
+    if debug:
+        logging.getLogger('alphamask').setLevel(logging.DEBUG)
+        logging.getLogger('alphamask.utils').setLevel(logging.DEBUG)
+        logging.getLogger('alphamask.analysis').setLevel(logging.DEBUG)
+        # set alphamask.utils.compression to warning
+        logging.getLogger('alphamask.utils.compression').setLevel(logging.WARNING)
+        
 def main():
     """Main entry point for the CLI"""
     parser = create_parser()
@@ -348,6 +432,9 @@ def main():
         elif args.command == "status":
             logger.debug("Running status command")
             status_cmd(args)
+        elif args.command == "analyze":
+            logger.debug("Running analyze command")
+            analyze_cmd(args)
         else:
             parser.print_help()
             return 1

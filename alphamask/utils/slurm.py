@@ -10,6 +10,7 @@ from enum import Enum
 import logging
 from datetime import datetime
 import json
+import re
 
 from .types import ExperimentConfig
 from .params import load_defaults
@@ -1162,3 +1163,35 @@ singularity exec --nv \\
         except Exception as e:
             logger.error(f"Error running experiment: {str(e)}")
             return False, ["Error: " + str(e)]
+
+    def get_job_info(self, job_id: str) -> Dict:
+        """Get detailed information about a specific job"""
+        try:
+            cmd = f"scontrol show job {job_id}"
+            result = subprocess.run(cmd.split(), capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                return {}
+            
+            info = parse_scontrol_output(result.stdout)
+            
+            # Extract GPU type from GRES or comment field
+            gpu_type = ""
+            if 'GRES' in info:
+                gres_match = re.search(r'gpu:(\w+):', info['GRES'])
+                if gres_match:
+                    gpu_type = gres_match.group(1)
+            
+            return {
+                'job_id': job_id,
+                'name': info.get('JobName', ''),
+                'state': info.get('JobState', ''),
+                'partition': info.get('Partition', ''),
+                'gpu_type': gpu_type,
+                'runtime': info.get('RunTime', ''),
+                'reason': info.get('Reason', '')
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting job info: {str(e)}")
+            return {}

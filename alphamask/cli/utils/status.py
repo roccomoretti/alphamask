@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from rich.table import Table
 from rich.console import Console
+from rich.box import ROUNDED
 import logging
 logger = logging.getLogger(__name__)
 
@@ -239,8 +240,8 @@ def create_stats_table(total_proteins, completed_jobs, running_jobs, pending_job
     
     return stats_table
 
-def create_jobs_table(jobs):
-    """Create the active jobs table"""
+def create_jobs_table(jobs: List[Dict], max_rows: int = 20) -> Table:
+    """Create a table showing job status information"""
     # Sort jobs: RUNNING first, then PENDING, then others
     def job_sort_key(job):
         state_order = {
@@ -249,89 +250,125 @@ def create_jobs_table(jobs):
             'FAILED': 2,
             'COMPLETED': 3
         }
-        return (state_order.get(job['state'], 99), job['id'])
+        return (state_order.get(job.get('state', ''), 99), job.get('job_id', ''))
     
     sorted_jobs = sorted(jobs, key=job_sort_key)
     
-    active_jobs_table = Table(
+    table = Table(
         "Job ID",
         "Name",
         "State",
         "Runtime",
-        "Reason",
+        "Partition/GPU",
         title="Active Jobs",
         expand=True,
         show_header=True,
-        header_style="bold blue"
+        header_style="bold blue",
+        box=ROUNDED
     )
     
     # Set column widths and justify
-    active_jobs_table.columns[0].width = 10  # Job ID
-    active_jobs_table.columns[1].width = 30  # Name
-    active_jobs_table.columns[2].width = 10  # State
-    active_jobs_table.columns[3].width = 10  # Runtime
-    active_jobs_table.columns[4].width = 20  # Reason
+    table.columns[0].width = 10  # Job ID
+    table.columns[1].width = 30  # Name
+    table.columns[2].width = 10  # State
+    table.columns[3].width = 10  # Runtime
+    table.columns[4].width = 25  # Partition/GPU
     
     # Set column justify
-    active_jobs_table.columns[0].justify = "right"
-    active_jobs_table.columns[1].justify = "left"
-    active_jobs_table.columns[2].justify = "center"
-    active_jobs_table.columns[3].justify = "right"
-    active_jobs_table.columns[4].justify = "left"
+    table.columns[0].justify = "right"
+    table.columns[1].justify = "left"
+    table.columns[2].justify = "center"
+    table.columns[3].justify = "right"
+    table.columns[4].justify = "left"
     
-    for job in sorted_jobs:
+    for job in sorted_jobs[:max_rows]:
         state_color = {
             'RUNNING': 'green',
             'PENDING': 'yellow',
             'FAILED': 'red',
             'COMPLETED': 'blue'
-        }.get(job['state'], 'white')
+        }.get(job.get('state', ''), 'white')
         
         # Truncate job name if too long
-        name = job['name']
+        name = job.get('name', '')
         if len(name) > 27:
             name = name[:24] + "..."
         
-        active_jobs_table.add_row(
-            job['id'],
+        # Format partition and GPU info
+        partition = job.get('partition', 'Unknown')
+        gpu_type = job.get('gpu_type', '')
+        location = f"{partition} ({gpu_type})" if gpu_type else partition
+        if len(location) > 22:
+            location = location[:19] + "..."
+        
+        table.add_row(
+            str(job.get('job_id', '')),
             name,
-            f"[{state_color}]{job['state']}[/{state_color}]",
-            job['runtime'],
-            job['reason'][:17] + "..." if len(job['reason']) > 20 else job['reason']
+            f"[{state_color}]{job.get('state', '')}[/{state_color}]",
+            str(job.get('runtime', '')),
+            location
         )
-    return active_jobs_table
+    
+    return table
+
+def parse_scontrol_output(output: str) -> Dict[str, str]:
+    """Parse scontrol show job output into a dictionary"""
+    info = {}
+    for line in output.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        # Split on first space to separate first key-value pair from rest of line
+        parts = line.split(' ', 1)
+        if len(parts) == 2:
+            # Process remaining key-value pairs
+            for pair in parts[1].split(' '):
+                if '=' in pair:
+                    key, value = pair.split('=', 1)
+                    info[key] = value
+        # Handle first key-value pair
+        if '=' in parts[0]:
+            key, value = parts[0].split('=', 1)
+            info[key] = value
+    return info
 
 def get_slurm_jobs() -> List[Dict]:
     """
     Get SLURM job information for current user.
     
     Returns:
-        List of dictionaries containing job information with keys:
-        id, name, state, runtime, timelimit, reason
+        List of dictionaries containing job information
     """
-    # Only get current jobs from squeue
-    cmd = ["squeue", "--me", "--format=%i|%j|%T|%M|%l|%R"]
+    # Get all needed info from squeue in one call
+    cmd = ["squeue", "--me", "--format=%i|%j|%T|%M|%l|%R|%P|%b"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     jobs = []
     
     # Process current jobs
     for line in result.stdout.strip().split('\n'):
         if '|' in line:
-            job_id, name, state, runtime, timelimit, reason = line.split('|')
-            # Skip header line
-            if job_id == "JOBID":
+            job_id, name, state, runtime, timelimit, reason, partition, gres = line.split('|')
+            # Skip header line and batch jobs
+            if job_id == "JOBID" or name.endswith('.batch'):
                 continue
-            # Skip batch jobs
-            if name.endswith('.batch'):
-                continue
-                
+            
+            # Parse GPU type from GRES
+            gpu_type = ""
+            if "gpu:" in gres:
+                try:
+                    gpu_type = gres.split("gpu:")[1].split(":")[0]
+                except IndexError:
+                    pass
+            
             jobs.append({
-                'id': job_id,
+                'job_id': job_id,
                 'name': name,
                 'state': state,
                 'runtime': runtime,
                 'timelimit': timelimit,
-                'reason': reason
+                'reason': reason,
+                'partition': partition,
+                'gpu_type': gpu_type
             })
     
     return jobs

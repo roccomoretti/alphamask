@@ -38,6 +38,24 @@ proteins:
     frustra_masking:
       enabled: false
       top_positions: 10  # Will analyze top 10 minimally frustrated positions
+    analysis:
+      references:
+        ref1:
+          path: "/work/nw99ixuq-alphamask/my_experiments/her2_39b69/iterative/WT/out/pdbs/WT_pos_1_39b69_mask_1_id_X_best.pdb"
+          description: "Reference structure 1"
+        ref2:
+          path: "/work/nw99ixuq-alphamask/my_experiments/her2_39b69/iterative/WT/out/pdbs/WT_pos_50_39b69_mask_50_id_X_best.pdb"
+          description: "Reference structure 2"
+      regions:
+        - name: "full"
+          start: 1
+          end: 281
+      atom_selection: "CA"
+      statistical_tests:
+        - type: "ttest"
+          alpha: 0.05
+        - type: "ks_test"
+          alpha: 0.05
   rfah:
     sequence: "MQSWYLLYCKRGQLQRAQEHLERQAVNCLAPMITLEKIVRGKRTAVSEPLFPNYLFVEFDPEVIHTTTINATRGVSHFVRFGASPAIVPSAVIHQLSVYKPKDIVDPATPYPGDKVIITEGAFEGFQAIFTEPDGEARSMLLLNLINKEIKHSVKNTEFRKL"
     iterative_masking:
@@ -134,6 +152,25 @@ proteins:
     frustra_masking:
       enabled: false
       top_positions: 10
+    analysis:
+      references:
+        ref1:
+          path: "/work/nw99ixuq-alphamask/state1.pdb"
+          description: "State 1"
+        ref2:
+          path: "/work/nw99ixuq-alphamask/state2.pdb"
+          description: "State 2"
+      regions:
+        - name: "full"
+          start: 1
+          end: 91
+      atom_selection: "CA"
+      statistical_tests:
+        - type: "ttest"
+          alpha: 0.05
+        - type: "ks_test"
+          alpha: 0.05
+
 # Global configuration
 global_settings:
   mask_token: "X"

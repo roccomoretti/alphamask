@@ -47,12 +47,17 @@ class BaseExperiment(ABC):
         # Only create the working directory if it's needed
         if not self.dry_run and isinstance(self, (IterativeExperiment, FrustraExperiment)):
             self.working_dir.mkdir(parents=True, exist_ok=True)
+            logger.debug(f"Created working directory: {self.working_dir}")
         
         # Load default parameters
         self.defaults = load_defaults()
+        logger.debug("Loaded default parameters")
         
         # Initialize controls list
         self.controls: List[Control] = []
+        
+        # Configure experiment-specific logging
+        self.debug = logging.getLogger().getEffectiveLevel() == logging.DEBUG
         
     @abstractmethod
     def validate(self) -> None:
@@ -76,6 +81,15 @@ class BaseExperiment(ABC):
     def cleanup(self) -> None:
         """Clean up resources after experiment"""
         pass
+
+    def _log_config_creation(self, config_path: Path):
+        """Log config file creation based on debug level"""
+        if self.debug:
+            logger.debug(f"Created WT position config at {config_path}")
+        else:
+            # Only show progress periodically for large numbers of configs
+            if config_path.name.endswith(('_1.yaml', '_50.yaml', '_100.yaml')):
+                logger.info(f"Creating configs... ({config_path.name})")
 
 class Control:
     """Base class for experiment controls"""
@@ -129,7 +143,7 @@ class Control:
                 self.schema_dir
             ]:
                 dir_path.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Created directory: {dir_path}")
+                logger.debug(f"Created directory: {dir_path}")
         else:
             # Log what would be created in dry run mode
             for dir_path in [

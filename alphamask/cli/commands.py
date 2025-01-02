@@ -1,16 +1,19 @@
 """Command handlers for AlphaMask CLI"""
 
+import multiprocessing
+# Set multiprocessing start method to 'spawn' for JAX compatibility
+multiprocessing.set_start_method('spawn', force=True)
+
 import logging
 import traceback
 from pathlib import Path
 import os
 import textwrap
 import yaml
+import json
+import pandas as pd
 from typing import Dict
 from datetime import datetime, timedelta
-
-# Configure logging first
-logger = logging.getLogger("alphamask.cli.commands")
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -20,6 +23,8 @@ from rich.style import Style
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.console import Group
 
+from ..analysis import RMSDAnalysis, create_analysis_config
+from colabdesign.af.contrib import predict
 from ..experiments.setup import ExperimentSetup
 from ..utils.slurm import SlurmJobConfig
 from ..experiments.runner import run_experiments
@@ -37,6 +42,10 @@ from .utils.status import (
     get_completed_jobs_count,
     create_status_layout,
 )
+
+
+# Configure logging first
+logger = logging.getLogger("alphamask.cli.commands")
 
 console = Console()
 
@@ -310,6 +319,7 @@ def submit_jobs_cmd(args):
         RuntimeError: If any job submissions fail
         Exception: For other errors during submission process
     """
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -331,23 +341,17 @@ def submit_jobs_cmd(args):
                 container_path=args.container,
                 script_path="alphamask predict-job",
                 schema_path=args.schema,
-                partition=None if args.force_local else args.partition,
-                gpu_type=None if args.force_local else args.gpu_type,
+                partition=None if args.force_local else args.partitions[0],  # Use first partition as default
+                gpu_type=None if args.force_local else args.gpu_types[0],  # Use first GPU type as default
                 setup_commands=["conda activate alphamask"]
             )
             
+            # Initialize partition manager with provided partitions and GPU types
+            from ..utils.partition import PartitionManager
+            partition_manager = PartitionManager()
+            
             # Get base directory
             base_dir = Path(args.path) if hasattr(args, 'path') else Path("/work/nw99ixuq-alphamask/my_experiments")
-            
-            # Add compression config to experiment parameters
-            config = load_config(args.config)
-            if 'global_settings' not in config:
-                config['global_settings'] = {}
-            config['global_settings']['compression'] = {
-                'format': args.compress,
-                'level': args.compression_level,
-                'store_uncompressed': args.store_uncompressed
-            }
             
             # Run experiments with compression config
             success = run_experiments(
@@ -355,7 +359,7 @@ def submit_jobs_cmd(args):
                 slurm_config=slurm_config,
                 base_dir=base_dir,
                 protein_ids=args.proteins,
-                compression_config=compression_config  # Pass compression config
+                compression_config=compression_config
             )
             
             progress.update(task, completed=True)
@@ -365,11 +369,11 @@ def submit_jobs_cmd(args):
                 title="Job Submission Complete",
                 details={
                     "Config File": args.config,
-                    "Container": args.container,
                     "Command": "alphamask predict-job",
+                    "Container": args.container,
                     "Base Directory": str(base_dir),
-                    "Partition": args.partition if not args.force_local else "Local",
-                    "GPU Type": args.gpu_type if not args.force_local else "Local",
+                    "Partitions": ", ".join(args.partitions),
+                    "GPU Types": ", ".join(args.gpu_types),
                     "Proteins": ", ".join(args.proteins) if args.proteins else "All",
                     "Compression": args.compress,
                     "Compression Level": args.compression_level,
@@ -696,3 +700,248 @@ def status_cmd(args):
             }
         )
         raise
+
+def analyze_cmd(args):
+    """Analyze RMSD distributions for completed experiments.
+    
+    This command analyzes RMSD distributions and generates visualizations for completed
+    protein structure predictions. It can analyze all proteins or specific ones, and
+    supports parallel processing and incremental analysis.
+
+    Args:
+        args: Namespace object from argparse containing:
+            - config (str): Path to protein configuration file
+            - path (str): Base path for experiments
+            - proteins (List[str], optional): Specific proteins to analyze
+            - parallel (int): Number of parallel processes
+            - incremental (bool): Only analyze new results
+            - format (str): Plot output format
+            - no_plots (bool): Skip plot generation
+            - force (bool): Force reanalysis of existing results
+            - debug (bool): Enable debug logging
+            - quiet (bool): Disable logging output
+            - log_file (str, optional): Path to log file
+
+    Raises:
+        Exception: If analysis fails for any reason
+    """
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Analyzing protein structures...", total=None)
+            
+            # Load and validate configuration
+            try:
+                logger.debug(f"Loading config from: {args.config}")
+                with open(args.config) as f:
+                    config = yaml.safe_load(f)
+                logger.debug(f"Loaded config: {config}")
+                if 'proteins' not in config:
+                    raise ValueError("Config file must have a 'proteins' section")
+            except Exception as e:
+                logger.error(f"Failed to load config file: {str(e)}")
+                raise
+            
+            # Get list of proteins to analyze
+            proteins = args.proteins if args.proteins else list(config['proteins'].keys())
+            
+            # Create base analysis directory
+            base_path = Path(args.path)
+            analysis_dir = base_path / "analysis"
+            analysis_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Track overall success
+            success = True
+            
+            # Process each protein
+            for protein_id in proteins:
+                if protein_id not in config['proteins']:
+                    logger.warning(f"Protein {protein_id} not found in configuration")
+                    continue
+                
+                protein_config = config['proteins'][protein_id]
+                if 'analysis' not in protein_config:
+                    logger.warning(f"No analysis configuration for protein {protein_id}")
+                    continue
+                
+                # Create analysis config
+                try:
+                    analysis_config = create_analysis_config(protein_config['analysis'])
+                except Exception as e:
+                    logger.error(f"Failed to create analysis config for {protein_id}: {str(e)}")
+                    success = False
+                    continue
+                
+                # Validate analysis config
+                if not analysis_config.validate():
+                    logger.error(f"Invalid analysis configuration for {protein_id}")
+                    success = False
+                    continue
+                
+                # Get protein directory
+                protein_dir = base_path / f"{protein_id}_{predict.get_hash(protein_config['sequence'])[:5]}"
+                if not protein_dir.exists():
+                    logger.warning(f"No experiment directory found for {protein_id}")
+                    continue
+                
+                # Create protein analysis directory
+                protein_analysis_dir = analysis_dir / protein_id
+                protein_analysis_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Process each experiment type
+                experiment_types = {
+                    "iterative": protein_config.get("iterative_masking", {}).get("enabled", False),
+                    "apriori": protein_config.get("apriori_masking", {}).get("enabled", False),
+                    "frustra": protein_config.get("frustra_masking", {}).get("enabled", False)
+                }
+                
+                for exp_type, enabled in experiment_types.items():
+                    if not enabled:
+                        continue
+                        
+                    exp_dir = protein_dir / exp_type
+                    if not exp_dir.exists():
+                        logger.warning(f"Experiment directory not found: {exp_dir}")
+                        continue
+                    
+                    # Create experiment analysis directory
+                    exp_analysis_dir = protein_analysis_dir / exp_type
+                    exp_analysis_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # For iterative masking, we need to check the WT directory first
+                    if exp_type == "iterative":
+                        wt_dir = exp_dir / "WT"
+                        if wt_dir.exists():
+                            try:
+                                # Initialize analysis pipeline for WT
+                                pipeline = RMSDAnalysis(
+                                    config=analysis_config,
+                                    output_dir=exp_analysis_dir / "WT",
+                                    save_plots=not args.no_plots,
+                                    plot_format=args.format,
+                                    force=args.force,
+                                    parallel=1,  # Force single process
+                                    overwrite=args.overwrite  # Pass overwrite flag
+                                )
+                                
+                                # Run analysis on WT
+                                results = pipeline.run_analysis(
+                                    exp_dir=wt_dir,
+                                    incremental=args.incremental,
+                                    overwrite=args.overwrite  # Pass overwrite flag
+                                )
+                                
+                                # Save WT results
+                                results_file = exp_analysis_dir / "WT" / "analysis_results.json"
+                                with open(results_file, 'w') as f:
+                                    # Convert RMSDResult objects to dictionaries before saving
+                                    serializable_results = {}
+                                    for file_name, result_list in results.items():
+                                        serializable_results[file_name] = [
+                                            {
+                                                'rmsd_ref1': float(r.rmsd_ref1),
+                                                'rmsd_ref2': float(r.rmsd_ref2) if r.rmsd_ref2 is not None else None,
+                                                'model_name': r.model_name,
+                                                'plddt': float(r.plddt) if r.plddt is not None else None
+                                            }
+                                            for r in result_list
+                                        ]
+                                    json.dump(serializable_results, f, indent=2)
+                                    
+                                logger.info(f"Analysis complete for {protein_id} {exp_type} WT")
+                            except Exception as e:
+                                logger.error(f"Analysis failed for {protein_id} {exp_type} WT: {str(e)}")
+                                if args.debug:
+                                    logger.debug(traceback.format_exc())
+                                success = False
+                    
+                    # For apriori masking, we need to process each experiment
+                    elif exp_type == "apriori":
+                        if 'experiments' in protein_config.get('apriori_masking', {}):
+                            for experiment in protein_config['apriori_masking']['experiments']:
+                                exp_name = experiment['name']
+                                exp_subdir = exp_dir / exp_name
+                                if exp_subdir.exists():
+                                    try:
+                                        # Initialize analysis pipeline for experiment
+                                        pipeline = RMSDAnalysis(
+                                            config=analysis_config,
+                                            output_dir=exp_analysis_dir / exp_name,
+                                            save_plots=not args.no_plots,
+                                            plot_format=args.format,
+                                            force=args.force,
+                                            parallel=1,  # Force single process
+                                            overwrite=args.overwrite  # Pass overwrite flag
+                                        )
+                                        
+                                        # Run analysis
+                                        results = pipeline.run_analysis(
+                                            exp_dir=exp_subdir,
+                                            incremental=args.incremental,
+                                            overwrite=args.overwrite  # Pass overwrite flag
+                                        )
+                                        
+                                        # Save results
+                                        results_file = exp_analysis_dir / exp_name / "analysis_results.json"
+                                        with open(results_file, 'w') as f:
+                                            # Convert RMSDResult objects to dictionaries before saving
+                                            serializable_results = {}
+                                            for file_name, result_list in results.items():
+                                                serializable_results[file_name] = [
+                                                    {
+                                                        'rmsd_ref1': float(r.rmsd_ref1),
+                                                        'rmsd_ref2': float(r.rmsd_ref2) if r.rmsd_ref2 is not None else None,
+                                                        'model_name': r.model_name,
+                                                        'plddt': float(r.plddt) if r.plddt is not None else None
+                                                    }
+                                                    for r in result_list
+                                                ]
+                                            json.dump(serializable_results, f, indent=2)
+                                            
+                                        logger.info(f"Analysis complete for {protein_id} {exp_type} {exp_name}")
+                                    except Exception as e:
+                                        logger.error(f"Analysis failed for {protein_id} {exp_type} {exp_name}: {str(e)}")
+                                        if args.debug:
+                                            logger.debug(traceback.format_exc())
+                                        success = False
+            
+            progress.update(task, completed=True)
+            
+            show_summary(
+                success=success,
+                title="Analysis Complete",
+                details={
+                    "Config File": args.config,
+                    "Base Path": args.path,
+                    "Proteins": ", ".join(proteins),
+                    "Plot Format": args.format if not args.no_plots else "disabled",
+                    "Parallel Jobs": args.parallel,
+                    "Mode": "Incremental" if args.incremental else "Full",
+                    "Status": "Success" if success else "Some analyses failed"
+                }
+            )
+            
+    except Exception as e:
+        logger.error(f"Analysis failed: {str(e)}")
+        show_summary(
+            success=False,
+            title="Analysis Failed",
+            details={
+                "Error": str(e),
+                "Config File": args.config
+            }
+        )
+        raise
+
+__all__ = [
+    'setup_cmd',
+    'submit_jobs_cmd',
+    'help_cmd',
+    'predict_job_cmd',
+    'extract_pdbs_cmd',
+    'status_cmd',
+    'analyze_cmd'
+]

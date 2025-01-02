@@ -1,207 +1,250 @@
-"""
-Analysis module for AlphaMask package.
+"""Analysis module for protein structure predictions."""
 
-This module provides functionality for analyzing protein structure predictions,
-including RMSD calculations, statistical analysis, and visualization.
-"""
-
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, Optional, Union, Any
 from pathlib import Path
 import logging
+import json
 from dataclasses import dataclass
-import plotly.io as pio
-from IPython.display import display
+import concurrent.futures
+from datetime import datetime
+import numpy as np
+import traceback
+from rich.console import Console
+from rich.status import Status
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn,
+    TimeRemainingColumn
+)
+from rich.live import Live
+from rich.panel import Panel
+from rich.text import Text
+from rich.spinner import Spinner
+from contextlib import contextmanager
+import time
 
-from .rmsd import RMSDConfig, RMSDResult, RMSDCalculator
-from .statistics import RMSDStatistics, RMSDAnalyzer
-from .visualization import PlotConfig, RMSDVisualizer
-
-# Configure plotly to render in notebooks
-pio.renderers.default = 'notebook'
+from .config import AnalysisConfig, create_analysis_config
+from .rmsd import RMSDCalculator, RMSDConfig, RMSDResult
+from .statistics import RMSDAnalyzer
+from .visualization import RMSDVisualizer
+from ..utils.compression import CompressedPredictionReader
 
 logger = logging.getLogger(__name__)
 
-@dataclass
-class AnalysisConfig:
-    """Configuration for RMSD analysis pipeline."""
-    rmsd_config: RMSDConfig
-    plot_config: Optional[PlotConfig] = None
-    output_dir: Optional[Union[str, Path]] = None
-    save_plots: bool = True
-    show_plots: bool = True
-    include_control: bool = True
-
-class RMSDAnalysis:
-    """
-    Main class for running RMSD analysis pipeline.
-    
-    Attributes:
-        config (AnalysisConfig): Analysis configuration
-        calculator (RMSDCalculator): RMSD calculator instance
-        analyzer (RMSDAnalyzer): Statistical analyzer instance
-        visualizer (RMSDVisualizer): Visualization handler instance
-    """
-    
-    def __init__(self, config: AnalysisConfig):
-        """Initialize analysis pipeline."""
-        self.config = config
-        self.calculator = RMSDCalculator(config.rmsd_config)
-        self.analyzer = RMSDAnalyzer()
-        self.visualizer = RMSDVisualizer(config.plot_config)
+class SimpleSpinner:
+    """A simple spinner that returns string characters."""
+    def __init__(self):
+        self.chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self.current = 0
         
-        if self.config.output_dir:
-            self.config.output_dir = Path(self.config.output_dir)
-            self.config.output_dir.mkdir(parents=True, exist_ok=True)
-            
+    def __str__(self) -> str:
+        char = self.chars[self.current]
+        self.current = (self.current + 1) % len(self.chars)
+        return char
+
+@contextmanager
+def progress_status(console: Console, total: int):
+    """Custom context manager for progress status."""
+    status = Status("", console=console)
+    try:
+        with status:
+            yield status
+    finally:
+        status.stop()
+
+@dataclass
+class RMSDAnalysis:
+    """Main class for RMSD analysis pipeline."""
+    
+    def __init__(
+        self,
+        config: AnalysisConfig,
+        output_dir: Union[str, Path],
+        save_plots: bool = True,
+        plot_format: str = "pdf",
+        force: bool = False,
+        parallel: int = 1,
+        overwrite: bool = False
+    ):
+        self.config = config
+        self.output_dir = Path(output_dir)
+        self.save_plots = save_plots
+        self.plot_format = plot_format
+        self.force = force
+        self.parallel = parallel
+        self.overwrite = overwrite
+        
+        # Initialize RMSDCalculator with RMSDConfig
+        rmsd_config = RMSDConfig(
+            atom_selection=config.atom_selection,
+            start_residue=config.regions[0].start if config.regions else None,
+            end_residue=config.regions[0].end if config.regions else None,
+            use_region=bool(config.regions)
+        )
+        self.calculator = RMSDCalculator(rmsd_config)
+        
+        # Load reference structures
+        self.ref_coords1 = self._load_reference(config.references['ref1'].path)
+        self.ref_coords2 = None
+        if 'ref2' in config.references:
+            self.ref_coords2 = self._load_reference(config.references['ref2'].path)
+        
+        # Initialize other components
+        self.analyzer = RMSDAnalyzer()
+        self.visualizer = RMSDVisualizer()
+        
+        # Create output directories
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        (self.output_dir / "plots").mkdir(exist_ok=True)
+        (self.output_dir / "data").mkdir(exist_ok=True)
+        
+    def _load_reference(self, pdb_path: Union[str, Path]) -> np.ndarray:
+        """Load reference coordinates from PDB file."""
+        return self.calculator.extract_coordinates(pdb_path)
+    
     def run_analysis(
         self,
-        ref_pdb1: Union[str, Path],
-        model_dirs: Dict[str, Union[str, Path]],
-        ref_pdb2: Optional[Union[str, Path]] = None,
-        control_dir: Optional[Union[str, Path]] = None
+        exp_dir: Union[str, Path],
+        incremental: bool = False,
+        overwrite: bool = False
     ) -> Dict[str, Any]:
-        """
-        Run complete RMSD analysis pipeline.
+        """Run analysis pipeline on experiment directory."""
+        exp_dir = Path(exp_dir)
+        console = Console()
         
-        Args:
-            ref_pdb1: Path to first reference PDB
-            model_dirs: Dictionary mapping structure names to model directories
-            ref_pdb2: Optional path to second reference PDB
-            control_dir: Optional path to control structure directory
+        # Get list of compressed files
+        compressed_dir = exp_dir / "out" / "compressed"
+        if not compressed_dir.exists():
+            logger.warning(f"No compressed predictions found in {exp_dir}")
+            return {}
             
-        Returns:
-            Dictionary containing analysis results
-        """
-        logger.info("Starting RMSD analysis pipeline")
+        comp_files = list(compressed_dir.glob("*_all_atoms.h5"))
+        if not comp_files:
+            logger.warning(f"No compressed prediction files found in {compressed_dir}")
+            return {}
+            
+        logger.info(f"Found {len(comp_files)} compressed prediction files")
         
-        # Extract reference coordinates
-        ref_coords1 = self.calculator.extract_coordinates(ref_pdb1)
-        ref_coords2 = None
-        if ref_pdb2:
-            ref_coords2 = self.calculator.extract_coordinates(ref_pdb2)
-            
-        # Process control structures if requested
-        if control_dir:
-            if self.config.include_control:
-                logger.info("Processing control structures from: %s", control_dir)
-                control_results = self.calculator.process_models(
-                    control_dir,
-                    ref_coords1,
-                    ref_coords2
+        results = {}
+        
+        with progress_status(console, len(comp_files)) as status:
+            # Process each file
+            for idx, comp_file in enumerate(comp_files, 1):
+                status.update(
+                    f"[cyan]Processing {comp_file.name} ({idx}/{len(comp_files)})"
                 )
+                
+                try:
+                    file_results = self._process_compressed_file(comp_file)
+                    if file_results:
+                        results.update(file_results)
+                except Exception as e:
+                    logger.error(f"Failed to process {comp_file}: {str(e)}")
+            
+            # Final tasks
+            if results:
+                status.update("[yellow]Aggregating results...")
+                
+                if self.save_plots:
+                    status.update("[green]Generating plots...")
+                    self.visualizer.plot_multiple_landscapes(
+                        results,
+                        output_dir=self.output_dir / "plots",
+                        format=self.plot_format,
+                        overwrite=overwrite
+                    )
+                
+                status.update("[blue]Saving results...")
+                self._save_results(results)
+                
+                console.print("[bold green]Analysis complete!")
             else:
-                logger.info("Control directory provided but include_control=False, skipping control")
-                control_results = None
-        else:
-            logger.info("No control directory provided")
-            control_results = None
-            
-        # Add debug logging after processing control
-        if control_results:
-            logger.info("Successfully processed %d control structures", len(control_results))
-            
-        # Process model structures
-        results_dict = {}
-        for name, model_dir in model_dirs.items():
-            logger.info(f"Processing {name} structures")
-            results_dict[name] = self.calculator.process_models(
-                model_dir,
-                ref_coords1,
-                ref_coords2
-            )
-            
-        # Calculate statistics
-        logger.info("Calculating statistics")
-        stats_list = []
+                console.print("[bold red]No valid results found")
         
-        if control_results:
-            stats_list.append(
-                self.analyzer.calculate_statistics(control_results, "Control", "ref1")
+        return results
+    
+    def _process_compressed_file(self, comp_file: Path) -> Dict[str, Any]:
+        """Process a single compressed prediction file."""
+        try:
+            # Calculate RMSDs with overwrite flag
+            rmsd_results = self.calculator.calculate_rmsds(
+                reader=CompressedPredictionReader(comp_file),
+                ref_coords1=self.ref_coords1,
+                ref_coords2=self.ref_coords2,
+                output_dir=self.output_dir / "data",
+                overwrite=self.overwrite
             )
-            if ref_coords2 is not None:
-                stats_list.append(
-                    self.analyzer.calculate_statistics(control_results, "Control", "ref2")
-                )
-                
-        for name, results in results_dict.items():
-            stats_list.append(
-                self.analyzer.calculate_statistics(results, name, "ref1")
-            )
-            if ref_coords2 is not None:
-                stats_list.append(
-                    self.analyzer.calculate_statistics(results, name, "ref2")
-                )
-                
-        summary_df = self.analyzer.create_summary_dataframe(stats_list)
-        detailed_df = self.analyzer.create_detailed_dataframe(results_dict, control_results)
+            
+            if rmsd_results:
+                return {comp_file.stem: rmsd_results}
+            return {}
+            
+        except Exception as e:
+            logger.error(f"Failed to process {comp_file}: {str(e)}")
+            return {}
+    
+    def _aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Aggregate results from multiple files."""
+        return self.analyzer.aggregate_results(results)
+    
+    def _generate_plots(self, results: Dict[str, Any]) -> None:
+        """Generate visualization plots."""
+        plots_dir = self.output_dir / "plots"
+        self.visualizer.create_plots(
+            results,
+            plots_dir,
+            format=self.plot_format
+        )
+    
+    def _save_results(self, results: Dict[str, Any]) -> None:
+        """Save analysis results."""
+        # Convert RMSDResult objects to dictionaries
+        serializable_results = {}
+        for file_name, result_list in results.items():
+            serializable_results[file_name] = [
+                {
+                    'rmsd_ref1': float(r.rmsd_ref1),
+                    'rmsd_ref2': float(r.rmsd_ref2) if r.rmsd_ref2 is not None else None,
+                    'model_name': r.model_name,
+                    'plddt': float(r.plddt) if r.plddt is not None else None
+                }
+                for r in result_list
+            ]
         
-        # Create visualizations
-        if self.config.save_plots or self.config.show_plots:
-            logger.info("Creating visualizations")
+        # Save to JSON file
+        results_file = self.output_dir / "data" / "analysis_results.json"
+        with open(results_file, 'w') as f:
+            json.dump(serializable_results, f, indent=2)
+    
+    def _load_cached_results(self) -> Dict[str, Any]:
+        """Load cached analysis results."""
+        results_file = self.output_dir / "data" / "analysis_results.json"
+        with open(results_file) as f:
+            json_results = json.load(f)
+        
+        # Convert back to RMSDResult objects
+        results = {}
+        for file_name, result_list in json_results.items():
+            results[file_name] = [
+                RMSDResult(
+                    rmsd_ref1=r['rmsd_ref1'],
+                    rmsd_ref2=r['rmsd_ref2'],
+                    model_name=r['model_name'],
+                    plddt=r['plddt']
+                )
+                for r in result_list
+            ]
+        return results
+    
+    def _is_analyzed(self, comp_file: Path) -> bool:
+        """Check if a compressed file has already been analyzed."""
+        results_file = self.output_dir / "data" / "analysis_results.json"
+        if not results_file.exists():
+            return False
             
-            violin_fig = self.visualizer.plot_violin_distributions(
-                results_dict,
-                control_results,
-                show=self.config.show_plots
-            )
-            
-            landscape_fig = self.visualizer.plot_multiple_landscapes(
-                results_dict,
-                control_results,
-                show=self.config.show_plots
-            )
-            
-            interactive_fig = self.visualizer.create_interactive_plot(
-                results_dict,
-                control_results
-            )
-            
-            # Display the interactive plot immediately if show_plots is True
-            if self.config.show_plots:
-                display(interactive_fig)
-            
-            # Save plots if requested
-            if self.config.save_plots and self.config.output_dir:
-                logger.info("Saving plots")
-                plots_dir = self.config.output_dir / "plots"
-                plots_dir.mkdir(exist_ok=True)
-                
-                violin_fig.savefig(plots_dir / "violin_distributions.png", dpi=300)
-                landscape_fig.savefig(plots_dir / "landscapes.png", dpi=300)
-                interactive_fig.write_html(str(plots_dir / "interactive_plot.html"))
-                
-        # Save results
-        if self.config.output_dir:
-            logger.info("Saving analysis results")
-            self.analyzer.save_results(
-                detailed_df,
-                summary_df,
-                self.config.output_dir / "data"
-            )
-            
-        return {
-            "control_results": control_results,
-            "model_results": results_dict,
-            "statistics": {
-                "summary": summary_df,
-                "detailed": detailed_df
-            },
-            "plots": {
-                "violin": violin_fig,
-                "landscape": landscape_fig,
-                "interactive": interactive_fig
-            } if (self.config.save_plots or self.config.show_plots) else None
-        }
-
-# Expose main classes and types
-__all__ = [
-    "RMSDConfig",
-    "RMSDResult",
-    "RMSDCalculator",
-    "RMSDStatistics",
-    "RMSDAnalyzer",
-    "PlotConfig",
-    "RMSDVisualizer",
-    "AnalysisConfig",
-    "RMSDAnalysis"
-] 
+        with open(results_file) as f:
+            results = json.load(f)
+            return comp_file.stem in results 
