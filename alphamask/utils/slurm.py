@@ -31,8 +31,8 @@ class JobStatus(Enum):
 
 @dataclass
 class SlurmJobConfig:
-    time: str = "24:00:00"
-    memory: str = "300000"
+    time: str = "02:00:00"
+    memory: str = "10000"
     cpus_per_task: int = 1
     partition: str = "clara"
     gpu_type: str = "rtx2080ti"
@@ -514,8 +514,8 @@ class SlurmJobManager:
 #SBATCH --job-name={job_name}
 #SBATCH --output={str(log_dir_path / f"{job_name}.out")}
 #SBATCH --error={str(log_dir_path / f"{job_name}.err")}
-#SBATCH --time=24:00:00
-#SBATCH --mem=300000
+#SBATCH --time=02:00:00
+#SBATCH --mem=10000
 #SBATCH --cpus-per-task=1
 #SBATCH --partition={self.slurm_config.partition}
 #SBATCH --gres=gpu:{self.slurm_config.gpu_type}:1

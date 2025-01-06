@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from ..utils.compression import CompressedPredictionReader, CompressedPrediction
 import time
 import traceback
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,54 @@ class RMSDResult:
     rmsd_ref1: float
     rmsd_ref2: Optional[float] = None
     model_name: Optional[str] = None
-    plddt: Optional[float] = None
+    plddt: Optional[float] = None  # Average pLDDT
+    plddt_array: Optional[np.ndarray] = None  # Per-residue pLDDT values
+
+@dataclass
+class RecycleInfo:
+    """Information about a specific recycle prediction."""
+    model: int
+    recycle: int
+    seed: int
+    
+    @classmethod
+    def from_model_name(cls, model_name: str) -> 'RecycleInfo':
+        """Extract recycle information from model name."""
+        try:
+            # Extract model, recycle, and seed numbers using regex
+            model_match = re.search(r'model_(\d+)', model_name)
+            recycle_match = re.search(r'_r(\d+)_', model_name)
+            seed_match = re.search(r'seed_(\d+)', model_name)
+            
+            if not all([model_match, recycle_match, seed_match]):
+                raise ValueError(f"Could not extract all information from {model_name}")
+            
+            return cls(
+                model=int(model_match.group(1)),
+                recycle=int(recycle_match.group(1)),
+                seed=int(seed_match.group(1))
+            )
+        except Exception as e:
+            logger.error(f"Failed to parse model name {model_name}: {str(e)}")
+            raise
+
+@dataclass
+class RecycleRMSDResult:
+    """RMSD result for a specific recycle prediction."""
+    rmsd_ref1: float
+    rmsd_ref2: Optional[float]
+    plddt: Optional[float]
+    info: RecycleInfo
+    
+    @classmethod
+    def from_rmsd_result(cls, result: RMSDResult, model_name: str) -> 'RecycleRMSDResult':
+        """Create RecycleRMSDResult from RMSDResult and model name."""
+        return cls(
+            rmsd_ref1=result.rmsd_ref1,
+            rmsd_ref2=result.rmsd_ref2,
+            plddt=result.plddt,
+            info=RecycleInfo.from_model_name(model_name)
+        )
 
 # Pre-compile JAX functions at module level for vectorized operations
 @jax.jit
@@ -158,11 +206,23 @@ class RMSDCalculator:
             # Create results
             results = [None] * len(predictions)
             for idx, orig_idx in enumerate(valid_indices):
+                pred = predictions[orig_idx]
+                
+                # Safely get pLDDT values
+                try:
+                    plddt_array = pred.plddt
+                    avg_plddt = float(np.mean(plddt_array)) if plddt_array is not None else None
+                except (AttributeError, TypeError):
+                    logger.debug(f"No pLDDT values found for prediction {pred.name}")
+                    plddt_array = None
+                    avg_plddt = None
+                
                 results[orig_idx] = RMSDResult(
                     rmsd_ref1=float(rmsd1_values[idx]),
                     rmsd_ref2=float(rmsd2_values[idx]) if rmsd2_values is not None else None,
-                    plddt=float(np.mean(predictions[orig_idx].plddt)) if predictions[orig_idx].plddt is not None else None,
-                    model_name=predictions[orig_idx].name
+                    plddt=avg_plddt,
+                    plddt_array=plddt_array,
+                    model_name=pred.name
                 )
             
             # Remove any unused slots
@@ -174,7 +234,8 @@ class RMSDCalculator:
                 rmsd_data = {
                     "rmsd_ref1": np.array([r.rmsd_ref1 for r in results]),
                     "rmsd_ref2": np.array([r.rmsd_ref2 for r in results if r.rmsd_ref2 is not None]),
-                    "plddt": np.array([r.plddt for r in results]),
+                    "plddt": np.array([r.plddt for r in results if r.plddt is not None]),
+                    "plddt_array": np.array([r.plddt_array for r in results if r.plddt_array is not None]),
                     "model_name": np.array([r.model_name for r in results])
                 }
                 np.savez(output_file, **rmsd_data)
@@ -322,3 +383,82 @@ class RMSDCalculator:
                 logger.warning(f"Failed to process {pdb_file}: {str(e)}")
                 
         return results 
+
+    def group_by_recycle(self, results: List[RMSDResult], model_names: List[str]) -> Dict[int, List[RecycleRMSDResult]]:
+        """Group RMSD results by recycle number."""
+        if len(results) != len(model_names):
+            raise ValueError("Number of results and model names must match")
+            
+        recycle_results: Dict[int, List[RecycleRMSDResult]] = {}
+        
+        for result, model_name in zip(results, model_names):
+            try:
+                recycle_result = RecycleRMSDResult.from_rmsd_result(result, model_name)
+                recycle = recycle_result.info.recycle
+                
+                if recycle not in recycle_results:
+                    recycle_results[recycle] = []
+                recycle_results[recycle].append(recycle_result)
+                
+            except Exception as e:
+                logger.warning(f"Skipping result for {model_name}: {str(e)}")
+                continue
+                
+        return recycle_results
+    
+    def group_by_model(self, results: List[RMSDResult], model_names: List[str]) -> Dict[int, Dict[int, List[RecycleRMSDResult]]]:
+        """Group RMSD results by model and recycle number."""
+        model_results: Dict[int, Dict[int, List[RecycleRMSDResult]]] = {}
+        
+        for result, model_name in zip(results, model_names):
+            try:
+                recycle_result = RecycleRMSDResult.from_rmsd_result(result, model_name)
+                model = recycle_result.info.model
+                recycle = recycle_result.info.recycle
+                
+                if model not in model_results:
+                    model_results[model] = {}
+                if recycle not in model_results[model]:
+                    model_results[model][recycle] = []
+                    
+                model_results[model][recycle].append(recycle_result)
+                
+            except Exception as e:
+                logger.warning(f"Skipping result for {model_name}: {str(e)}")
+                continue
+                
+        return model_results
+    
+    def get_cumulative_results(
+        self,
+        results: List[RMSDResult],
+        model_names: List[str],
+        start_recycle: int = 0,
+        end_recycle: Optional[int] = None,
+        model: Optional[int] = None
+    ) -> List[RecycleRMSDResult]:
+        """Get cumulative results for specified recycle range and optional model."""
+        cumulative_results = []
+        
+        for result, model_name in zip(results, model_names):
+            try:
+                recycle_result = RecycleRMSDResult.from_rmsd_result(result, model_name)
+                recycle = recycle_result.info.recycle
+                
+                # Check if result is within specified recycle range
+                if recycle < start_recycle:
+                    continue
+                if end_recycle is not None and recycle > end_recycle:
+                    continue
+                    
+                # Check if result matches specified model
+                if model is not None and recycle_result.info.model != model:
+                    continue
+                    
+                cumulative_results.append(recycle_result)
+                
+            except Exception as e:
+                logger.warning(f"Skipping result for {model_name}: {str(e)}")
+                continue
+                
+        return cumulative_results 

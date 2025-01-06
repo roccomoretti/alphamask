@@ -7,9 +7,32 @@ from rich.box import ROUNDED
 import logging
 logger = logging.getLogger(__name__)
 
+
+import logging
+import traceback
+from pathlib import Path
+import os
+import textwrap
+import yaml
+import json
+import pandas as pd
+from typing import Dict
+from datetime import datetime, timedelta
+
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.table import Table
+from rich.style import Style
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
+from rich.console import Group
+
+from .generic import show_summary
 from typing import Dict, List, Tuple
 import subprocess
 from rich.layout import Layout
+console = Console()
+
 
 def get_protein_jobs(config_path):
     """Get job counts per protein"""
@@ -240,8 +263,15 @@ def create_stats_table(total_proteins, completed_jobs, running_jobs, pending_job
     
     return stats_table
 
-def create_jobs_table(jobs: List[Dict], max_rows: int = 20) -> Table:
+def create_jobs_table(jobs: List[Dict], max_rows: int = None) -> Table:
     """Create a table showing job status information"""
+    # Get terminal height if max_rows not specified
+    if max_rows is None:
+        # Get terminal height and subtract space for headers, borders, etc.
+        term_height = console.height
+        max_rows = term_height - 10  # Subtract space for headers, borders, etc.
+        max_rows = max(5, max_rows)  # Ensure at least 5 rows
+    
     # Sort jobs: RUNNING first, then PENDING, then others
     def job_sort_key(job):
         state_order = {
@@ -297,7 +327,7 @@ def create_jobs_table(jobs: List[Dict], max_rows: int = 20) -> Table:
         # Format partition and GPU info
         partition = job.get('partition', 'Unknown')
         gpu_type = job.get('gpu_type', '')
-        location = f"{partition} ({gpu_type})" if gpu_type else partition
+        location = f"{partition} (NVIDIA {gpu_type})" if gpu_type else partition
         if len(location) > 22:
             location = location[:19] + "..."
         
@@ -489,7 +519,150 @@ def create_status_layout():
         Layout(name="footer", size=3)
     )
     layout["main"].split_row(
-        Layout(name="left"),
-        Layout(name="right")
+        Layout(name="left", ratio=1),
+        Layout(name="right", ratio=2)
     )
     return layout
+
+def status_cmd(args):
+    """Show status of running AlphaMask experiments."""
+    try:
+        from rich.live import Live
+        from rich.layout import Layout
+        from rich.panel import Panel
+        from rich.progress import BarColumn, Progress, TextColumn
+        from rich.table import Table
+        from rich.console import Group
+        from datetime import datetime, timedelta
+        import os
+        from pathlib import Path
+
+        # Initial setup
+        layout = create_status_layout()
+        total_proteins = parse_config_for_total_jobs(args.config)
+
+        # Create progress bar
+        progress = Progress(
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(complete_style="green", finished_style="green"),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            expand=True
+        )
+        
+        total_task = progress.add_task(
+            "Total Progress", 
+            total=total_proteins,
+            completed=0
+        )
+
+        if args.refresh > 0:
+            with Live(layout, refresh_per_second=1/args.refresh, screen=True):
+                while True:
+                    # Get job counts
+                    jobs = get_slurm_jobs()
+                    running_jobs, pending_jobs, slurm_completed, failed_jobs = get_job_counts(jobs)
+                    completed_jobs = get_completed_jobs_count(args.path)
+                    
+                    # Get per-protein progress
+                    protein_jobs = get_protein_jobs(args.config)
+                    completed_by_protein = get_completed_jobs_by_protein(args.path, args.config)
+                    
+                    protein_progress = {
+                        protein_id: (completed_by_protein.get(protein_id, 0), total)
+                        for protein_id, total in protein_jobs.items()
+                    }
+                    
+                    # Update components
+                    progress.update(total_task, completed=completed_jobs, total=total_proteins)
+                    
+                    stats_table = create_stats_table(
+                        total_proteins, 
+                        completed_jobs, 
+                        running_jobs, 
+                        pending_jobs, 
+                        failed_jobs,
+                        protein_progress=protein_progress,
+                        jobs=jobs,
+                        args=args
+                    )
+                    
+                    # Update header
+                    layout["header"].update(Panel(
+                        f"[bold blue]AlphaMask Job Status[/bold blue]\n"
+                        f"Path: {args.path}",
+                        style="blue"
+                    ))
+                    
+                    # Update left panel with new stats table
+                    left_panel = Panel(
+                        Group(
+                            progress,
+                            "\n",
+                            stats_table
+                        ),
+                        title="Progress Overview"
+                    )
+                    layout["left"].update(left_panel)
+                    
+                    # Update right panel with new jobs table
+                    active_jobs_table = create_jobs_table(jobs)
+                    layout["right"].update(Panel(active_jobs_table))
+                    
+                    # Update footer
+                    layout["footer"].update(Panel(""))
+        else:
+            # Single update mode
+            jobs = get_slurm_jobs()
+            running_jobs, pending_jobs, slurm_completed, failed_jobs = get_job_counts(jobs)
+            completed_jobs = get_completed_jobs_count(args.path)
+            
+            # Update all components once
+            layout["header"].update(Panel(
+                f"[bold blue]AlphaMask Job Status[/bold blue]\n"
+                f"Path: {args.path}",
+                style="blue"
+            ))
+            
+            progress.update(total_task, completed=completed_jobs, total=total_proteins)
+            
+            stats_table = create_stats_table(
+                total_proteins, 
+                completed_jobs, 
+                running_jobs, 
+                pending_jobs, 
+                failed_jobs,
+                protein_progress=protein_progress,
+                jobs=jobs,
+                args=args
+            )
+            left_panel = Panel(
+                Group(
+                    progress,
+                    "\n",
+                    stats_table
+                ),
+                title="Progress Overview"
+            )
+            layout["left"].update(left_panel)
+            
+            active_jobs_table = create_jobs_table(jobs)
+            layout["right"].update(Panel(active_jobs_table))
+            
+            layout["footer"].update(Panel(""))
+            
+            console.print(layout)
+
+    except KeyboardInterrupt:
+        return
+    except Exception as e:
+        logger.error(f"Status command failed: {str(e)}")
+        show_summary(
+            success=False,
+            title="Status Check Failed",
+            details={
+                "Error": str(e),
+                "Config": args.config,
+                "Path": args.path
+            }
+        )
+        raise

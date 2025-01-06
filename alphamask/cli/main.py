@@ -20,12 +20,12 @@ from .commands import (
     setup_cmd,
     submit_jobs_cmd,
     help_cmd,
-    predict_cmd,
     predict_job_cmd,
-    extract_pdbs_cmd,
-    status_cmd,
-    analyze_cmd
+    analyze_cmd,
+    resubmit_incomplete
 )
+from .utils.status import status_cmd
+from .utils.extract_pdbs import extract_pdbs_cmd
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the main argument parser"""
@@ -346,6 +346,88 @@ def create_parser() -> argparse.ArgumentParser:
         help="Overwrite existing RMSD files and plots"
     )
     
+    # Visualization options
+    vis_group = analyze_parser.add_argument_group('Visualization Options')
+    vis_group.add_argument(
+        "--recycle",
+        action="store_true",
+        help="Generate recycle analysis visualizations"
+    )
+    vis_group.add_argument(
+        "--plot-types",
+        nargs="+",
+        choices=["rmsd", "summary", "comparison", "all"],
+        default=["all"],
+        help="Types of plots to generate (rmsd=individual landscapes, summary=collages, comparison=model comparisons)"
+    )
+    vis_group.add_argument(
+        "--models",
+        type=str,
+        nargs="*",
+        help="Specific models to include in visualizations (default: all)"
+    )
+    vis_group.add_argument(
+        "--recycles",
+        type=str,
+        nargs="*",
+        help="Specific recycle iterations to include (default: all)"
+    )
+    vis_group.add_argument(
+        "--positions",
+        type=int,
+        nargs="*",
+        help="Specific positions to analyze (default: all)"
+    )
+    vis_group.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="DPI for output plots"
+    )
+    vis_group.add_argument(
+        "--style",
+        choices=["default", "publication", "presentation"],
+        default="default",
+        help="Plot style preset"
+    )
+    
+    # Output organization
+    output_group = analyze_parser.add_argument_group('Output Organization')
+    output_group.add_argument(
+        "--output-dir",
+        type=str,
+        help="Custom output directory for plots (default: analysis/plots)"
+    )
+    output_group.add_argument(
+        "--flat",
+        action="store_true",
+        help="Use flat directory structure instead of hierarchical"
+    )
+    output_group.add_argument(
+        "--prefix",
+        type=str,
+        help="Prefix for output files"
+    )
+    
+    # Add our new "resubmit-incomplete" command
+    resubmit_incomplete_parser = subparsers.add_parser(
+        "resubmit-incomplete",
+        help="Resubmit incomplete jobs for iterative or apriori experiments",
+        parents=[parent_parser]
+    )
+    resubmit_incomplete_parser.add_argument(
+        "--path",
+        type=str,
+        default="/work/nw99ixuq-alphamask/my_experiments",
+        help="Base path for experiments"
+    )
+    resubmit_incomplete_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be resubmitted without actually submitting"
+    )
+    resubmit_incomplete_parser.set_defaults(func=resubmit_incomplete)
+    
     return parser
 
 def setup_logging(debug: bool = False, log_file: Optional[str] = None, quiet: bool = False) -> None:
@@ -411,12 +493,67 @@ def main():
         )
         
         logger.debug(f"Parsed arguments: {args}")
+        logger.debug(f"Running {args.command} command")
         
-        if args.command == "setup":
-            logger.debug("Running setup command")
+        # Handle visualization options for analyze command
+        if args.command == "analyze":
+            # Set up visualization config
+            if hasattr(args, 'plot_types'):
+                if "all" in args.plot_types:
+                    args.plot_types = ["rmsd", "summary", "comparison"]
+                
+                # Validate plot type combinations
+                if args.no_plots and args.plot_types:
+                    logger.warning("--no-plots specified with --plot-types, plots will be skipped")
+                
+                # Set up output directory
+                if args.output_dir:
+                    args.output_dir = Path(args.output_dir)
+                else:
+                    args.output_dir = Path(args.path) / "analysis" / "plots"
+                
+                if not args.flat:
+                    # Create hierarchical structure
+                    for plot_type in args.plot_types:
+                        (args.output_dir / plot_type).mkdir(parents=True, exist_ok=True)
+                else:
+                    args.output_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Handle style presets
+                if args.style == "publication":
+                    import matplotlib.pyplot as plt
+                    plt.style.use(['science', 'ieee'])
+                    plt.rcParams.update({
+                        'figure.dpi': args.dpi,
+                        'savefig.dpi': args.dpi,
+                        'font.size': 8,
+                        'axes.labelsize': 8,
+                        'axes.titlesize': 10,
+                        'xtick.labelsize': 6,
+                        'ytick.labelsize': 6,
+                        'legend.fontsize': 6,
+                        'figure.titlesize': 12
+                    })
+                elif args.style == "presentation":
+                    import matplotlib.pyplot as plt
+                    plt.style.use('seaborn-talk')
+                    plt.rcParams.update({
+                        'figure.dpi': args.dpi,
+                        'savefig.dpi': args.dpi,
+                        'font.size': 12,
+                        'axes.labelsize': 12,
+                        'axes.titlesize': 14,
+                        'xtick.labelsize': 10,
+                        'ytick.labelsize': 10,
+                        'legend.fontsize': 10,
+                        'figure.titlesize': 16
+                    })
+            
+            analyze_cmd(args)
+            
+        elif args.command == "setup":
             setup_cmd(args)
         elif args.command == "run":
-            logger.debug("Running run command")
             submit_jobs_cmd(args)
         elif args.command == "help":
             help_cmd(args)
@@ -424,17 +561,15 @@ def main():
             logger.debug("Running predict command, this needs to be refactored")
             raise NotImplementedError("Predict command needs refactoring")
         elif args.command == "predict-job":
-            logger.debug("Running predict-job command")
             predict_job_cmd(args)
         elif args.command == "extract-pdbs":
-            logger.debug("Running extract-pdbs command")
             extract_pdbs_cmd(args)
         elif args.command == "status":
-            logger.debug("Running status command")
             status_cmd(args)
-        elif args.command == "analyze":
-            logger.debug("Running analyze command")
-            analyze_cmd(args)
+        elif args.command == "resubmit-incomplete":
+            # Warn the user that this is work in progress
+            logger.warning("This command is work in progress and may not work as expected for your use case.")
+            resubmit_incomplete(args)
         else:
             parser.print_help()
             return 1
@@ -445,6 +580,8 @@ def main():
         # Set up basic error logging without args
         setup_logging(debug=False, quiet=False)
         logger.error(f"Command failed: {str(e)}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(traceback.format_exc())
         return 1
 
 if __name__ == "__main__":
