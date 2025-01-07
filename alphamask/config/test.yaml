@@ -107,13 +107,13 @@ proteins:
   i89:
     sequence: "GSHMASMEDLQAEARAFLSEEMIAEFKAAFDMFDADGGGDISYKAVGTVFRMLGINPSKEVLDYLKEKIDVDGSGTIDFEEFLVLMVYIMKQDA"
     iterative_masking:
-      enabled: true
+      enabled: false
       mutations:
         - ["I89S"]
         - ["I89N"]
       mask_token: "X"
     apriori_masking:
-      enabled: true
+      enabled: false
       experiments:
         - name: "kortemme_et_al_I89S"
           positions: [89]

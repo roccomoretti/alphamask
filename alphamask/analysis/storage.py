@@ -232,8 +232,19 @@ class Storage:
         skipped_positions = set()
         logger.debug(f"Storing {len(results)} results in batch")
 
-        # Process each result
+        # Track seeds per position/model/recycle
+        seed_counts = {}
+
+        # Group results by position/model/recycle for batch processing
+        grouped_results = {}
         for pos, model, recycle, seed, rmsd1, rmsd2, plddt_array in results:
+            key = (pos, model, recycle)
+            if key not in grouped_results:
+                grouped_results[key] = []
+            grouped_results[key].append((seed, rmsd1, rmsd2, plddt_array))
+
+        # Process each result
+        for (pos, model, recycle), entries in grouped_results.items():
             # Skip if position already has data and we're not overwriting
             if not overwrite and pos in self._memory_store['positions'] and \
                model in self._memory_store['positions'][pos] and \
@@ -242,6 +253,12 @@ class Storage:
                 continue
 
             positions_in_batch.add(pos)
+            
+            # Track seed counts
+            key = (pos, model, recycle)
+            if key not in seed_counts:
+                seed_counts[key] = set()
+            seed_counts[key].update(seed for seed, _, _, _ in entries)
             
             # Update metadata
             self._memory_store['metadata']['positions'].add(pos)
@@ -269,12 +286,17 @@ class Storage:
             
             # Store the data
             recycle_data = self._memory_store['positions'][pos][model][recycle]
-            recycle_data['rmsd_ref1'].append(rmsd1)
-            if rmsd2 is not None:
-                recycle_data['rmsd_ref2'].append(rmsd2)
-            if plddt_array is not None:
-                recycle_data['plddt'].append(plddt_array)
-            recycle_data['seeds'].append(seed)
+            for seed, rmsd1, rmsd2, plddt_array in entries:
+                recycle_data['rmsd_ref1'].append(rmsd1)
+                if rmsd2 is not None:
+                    recycle_data['rmsd_ref2'].append(rmsd2)
+                if plddt_array is not None:
+                    recycle_data['plddt'].append(plddt_array)
+                recycle_data['seeds'].append(seed)
+        
+        # Log detailed seed counts
+        for (pos, model, recycle), seeds in seed_counts.items():
+            logger.debug(f"Position {pos}, Model {model}, Recycle {recycle}: {len(seeds)} unique seeds - {sorted(seeds)}")
         
         if positions_in_batch:
             logger.debug(f"Added results to positions: {sorted(positions_in_batch)}")

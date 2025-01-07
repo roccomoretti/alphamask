@@ -314,6 +314,20 @@ def create_parser() -> argparse.ArgumentParser:
         help="Specific proteins to analyze (default: all)"
     )
     analyze_parser.add_argument(
+        "--regions",
+        type=str,
+        nargs="*",
+        help="Specific regions to analyze (default: all regions defined in config)"
+    )
+    analyze_parser.add_argument(
+        "--experiment-types",
+        type=str,
+        nargs="+",
+        choices=["apriori", "iterative"],
+        default=["apriori", "iterative"],
+        help="Types of experiments to analyze (default: all)"
+    )
+    analyze_parser.add_argument(
         "--parallel",
         type=int,
         default=1,
@@ -377,6 +391,12 @@ def create_parser() -> argparse.ArgumentParser:
         type=int,
         nargs="*",
         help="Specific positions to analyze (default: all)"
+    )
+    vis_group.add_argument(
+        "--per-position-plots",
+        action="store_true",
+        default=False,
+        help="Generate per-position plots for iterative experiments (default: False)"
     )
     vis_group.add_argument(
         "--dpi",

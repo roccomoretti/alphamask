@@ -77,17 +77,41 @@ class RMSDAnalysis:
     
     def _extract_info_from_name(self, name: str) -> Dict[str, int]:
         """Extract position, model, recycle, and seed from name."""
-        pattern = r"WT_pos_(\d+).*_model_(\d+).*_r(\d+)_seed_(\d+)_.*"
-        match = re.match(pattern, name)
-        if not match:
-            raise ValueError(f"Invalid model name format: {name}")
+        # Try WT pattern first
+        wt_pattern = r"WT_pos_(\d+).*_model_(\d+).*_r(\d+)_seed_(\d+)_.*"
+        wt_match = re.match(wt_pattern, name)
+        if wt_match:
+            return {
+                'position': int(wt_match.group(1)),
+                'model': int(wt_match.group(2)),
+                'recycle': int(wt_match.group(3)),
+                'seed': int(wt_match.group(4))
+            }
             
-        return {
-            'position': int(match.group(1)),
-            'model': int(match.group(2)),
-            'recycle': int(match.group(3)),
-            'seed': int(match.group(4))
-        }
+        # Try mutant pattern
+        mut_pattern = r".*_pos_(\d+).*_model_(\d+).*_r(\d+)_seed_(\d+).*"
+        mut_match = re.match(mut_pattern, name)
+        if mut_match:
+            return {
+                'position': int(mut_match.group(1)),
+                'model': int(mut_match.group(2)),
+                'recycle': int(mut_match.group(3)),
+                'seed': int(mut_match.group(4))
+            }
+            
+        # Try apriori pattern
+        apriori_pattern = r".*_model_(\d+)_ptm_r(\d+)_seed_(\d+)(?:_mask_(\d+))?(?:_mut_[A-Z]\d+[A-Z])?(?:_id_X)?"
+        apriori_match = re.match(apriori_pattern, name)
+        if apriori_match:
+            position = int(apriori_match.group(4)) if apriori_match.group(4) else 89  # Default to 89 if not specified
+            return {
+                'position': position,
+                'model': int(apriori_match.group(1)),
+                'recycle': int(apriori_match.group(2)),
+                'seed': int(apriori_match.group(3))
+            }
+            
+        raise ValueError(f"Invalid model name format: {name}")
     
     def run_analysis(
         self,
@@ -165,6 +189,12 @@ class RMSDAnalysis:
                 logger.warning(f"No predictions found in {comp_file}")
                 return {}
                 
+            # Log number of predictions found
+            logger.debug(f"Found {len(predictions)} predictions in {comp_file}")
+            # Log first few predictions to check format
+            for i, pred in enumerate(predictions[:3]):
+                logger.debug(f"Prediction {i}: name={pred.name}")
+
             # Check first prediction to see if we need to process this file
             try:
                 info = self._extract_info_from_name(predictions[0].name)
@@ -187,8 +217,16 @@ class RMSDAnalysis:
                 ref_coords2=self.ref_coords2
             )
             
+            # Log number of RMSD results
+            logger.debug(f"Calculated {len(rmsd_results)} RMSD results from {comp_file}")
+            # Log first few results
+            for i, result in enumerate(rmsd_results[:3]):
+                logger.debug(f"RMSD Result {i}: model_name={result.model_name}")
+            
             # Prepare batch data
             batch_data = []
+            model_seed_counts = {}  # Track seeds per model/recycle
+            
             for result in rmsd_results:
                 if not result.model_name:
                     logger.warning("Skipping result with no model name")
@@ -196,6 +234,11 @@ class RMSDAnalysis:
                     
                 try:
                     info = self._extract_info_from_name(result.model_name)
+                    key = (info['model'], info['recycle'])
+                    if key not in model_seed_counts:
+                        model_seed_counts[key] = set()
+                    model_seed_counts[key].add(info['seed'])
+                    
                     batch_data.append((
                         info['position'],
                         info['model'],
@@ -209,6 +252,10 @@ class RMSDAnalysis:
                     logger.warning(f"Skipping invalid model name {result.model_name}: {e}")
                     continue
             
+            # Log seed counts per model/recycle before storage
+            for (model, recycle), seeds in model_seed_counts.items():
+                logger.debug(f"Before storage - Model {model}, Recycle {recycle}: {len(seeds)} seeds - {sorted(seeds)}")
+            
             # Log batch data structure
             if batch_data:
                 positions = sorted(set(pos for pos, *_ in batch_data))
@@ -218,6 +265,7 @@ class RMSDAnalysis:
                 logger.debug(f"  Positions: {positions}")
                 logger.debug(f"  Models: {models}")
                 logger.debug(f"  Recycles: {recycles}")
+                logger.debug(f"  Total batch entries: {len(batch_data)}")
             
             # Store batch data
             if batch_data:

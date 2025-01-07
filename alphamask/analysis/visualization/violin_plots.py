@@ -18,7 +18,8 @@ def create_violin_plots(
     position: int,
     output_dir: Optional[Path] = None,
     format: str = "pdf",
-    show: bool = False
+    show: bool = False,
+    max_rmsd: Optional[float] = None
 ) -> Dict[str, plt.Figure]:
     """
     Create publication-ready violin plots of RMSD distributions.
@@ -29,6 +30,7 @@ def create_violin_plots(
         output_dir: Directory to save plots
         format: Output format (pdf, png)
         show: Whether to display plots
+        max_rmsd: Optional maximum RMSD value for plot scaling
         
     Returns:
         Dictionary of generated figures
@@ -73,9 +75,10 @@ def create_violin_plots(
                                   gridspec_kw={'height_ratios': [1, 1],
                                              'hspace': 0.2})
     
-    # Calculate global y-axis range
-    all_values = rmsd_ref1_data + rmsd_ref2_data if rmsd_ref2_data else rmsd_ref1_data
-    max_rmsd = max(max(max(values) for values in all_values), 5.0)
+    # Calculate global y-axis range if not provided
+    if max_rmsd is None:
+        all_values = rmsd_ref1_data + rmsd_ref2_data if rmsd_ref2_data else rmsd_ref1_data
+        max_rmsd = max(max(max(values) for values in all_values), 5.0)
     
     # Plot Reference 1 (top)
     parts1 = ax1.violinplot(

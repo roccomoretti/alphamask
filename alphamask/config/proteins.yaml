@@ -122,6 +122,29 @@ proteins:
     frustra_masking:
       enabled: false
       top_positions: 10
+    analysis:
+      references:
+        ref1:
+          path: "/work/nw99ixuq-alphamask/aRfaH_FL_minim.pdb"
+          description: "Alpha State"
+        ref2:
+          path: "/work/nw99ixuq-alphamask/bRfaH_FL_minim.pdb"
+          description: "Beta State"
+      regions:
+        - name: "full"
+          start: 1
+          end: 162
+          description: "Full sequence"
+        - name: "cterminal"
+          start: 110
+          end: 162
+          description: "C-terminal domain"
+      atom_selection: "CA"
+      statistical_tests:
+        - type: "ttest"
+          alpha: 0.05
+        - type: "ks_test"
+          alpha: 0.05
   i89:
     sequence: "GSHMASMEDLQAEARAFLSEEMIAEFKAAFDMFDADGGGDISYKAVGTVFRMLGINPSKEVLDYLKEKIDVDGSGTIDFEEFLVLMVYIMKQDA"
     iterative_masking:
@@ -131,7 +154,7 @@ proteins:
         - ["I89N"]
       mask_token: "X"
     apriori_masking:
-      enabled: true
+      enabled: false
       experiments:
         - name: "kortemme_et_al_I89S"
           positions: [89]

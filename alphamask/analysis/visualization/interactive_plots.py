@@ -283,4 +283,4 @@ def create_interactive_plot(
         if not show:
             plt.close(fig)
     
-    return figures 
+    return figures
