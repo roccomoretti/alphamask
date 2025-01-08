@@ -174,9 +174,12 @@ class ExperimentRunner:
             # Sort by sequence length
             protein_lengths.sort(key=lambda x: x[1])
             
-            # Initialize partition manager
+            # Initialize partition manager with specified partition and GPU type
             from ..utils.partition import PartitionManager
-            partition_manager = PartitionManager()
+            partition_manager = PartitionManager(
+                partitions=[self.slurm_config.partition] if self.slurm_config.partition else None,
+                gpu_types=[self.slurm_config.gpu_type] if self.slurm_config.gpu_type else None
+            )
             
             # Log initial partition assignment plan
             logger.info("Initial partition assignment plan:")

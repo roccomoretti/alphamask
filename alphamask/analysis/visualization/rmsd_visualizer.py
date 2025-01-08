@@ -26,6 +26,8 @@ from .recycle_plots import (
     create_summary_collages,
     create_model_comparisons
 )
+from .scatter_plots import create_scatter_plot, create_combined_scatter_plot
+
 from ..storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,8 @@ class RMSDVisualizer(BaseVisualizer):
         show: bool = False,
         interactive: bool = False,
         recycle: bool = False,
-        max_rmsd: float = 0
+        max_rmsd: float = 0,
+        system_name: Optional[str] = None
     ) -> Dict[str, plt.Figure]:
         """
         Create all available plots for a given position.
@@ -82,7 +85,8 @@ class RMSDVisualizer(BaseVisualizer):
             output_dir=output_dir,
             format=format,
             show=show,
-            max_rmsd=max_rmsd
+            max_rmsd=max_rmsd,
+            system_name=system_name
         )
         figures.update(landscape_figs)
         logger.info(f"Landscape plots created for position {position}")
@@ -228,7 +232,8 @@ class RMSDVisualizer(BaseVisualizer):
         output_dir: Optional[Path] = None,
         format: str = "pdf",
         show: bool = False,
-        max_rmsd: float = 0
+        max_rmsd: float = 0,
+        system_name: Optional[str] = None
     ) -> Dict[str, plt.Figure]:
         """
         Create RMSD landscape plots for a given position.
@@ -274,7 +279,8 @@ class RMSDVisualizer(BaseVisualizer):
             rmsd_ref2=np.array(rmsd_ref2_values) if rmsd_ref2_values else None,
             title=f"Position {position}",
             show=False,
-            max_rmsd=max_rmsd
+            max_rmsd=max_rmsd,
+            system_name=system_name
         )
         figures['landscape'] = fig
         
@@ -292,7 +298,8 @@ class RMSDVisualizer(BaseVisualizer):
         output_dir: Optional[Path] = None,
         format: str = "pdf",
         show: bool = False,
-        max_rmsd: Optional[float] = None
+        max_rmsd: Optional[float] = None,
+        system_name: Optional[str] = None
     ) -> plt.Figure:
         """
         Create a single landscape plot combining all predictions from all positions.
@@ -312,7 +319,8 @@ class RMSDVisualizer(BaseVisualizer):
             output_dir=output_dir,
             format=format,
             show=show,
-            max_rmsd=max_rmsd
+            max_rmsd=max_rmsd,
+            system_name=system_name
         ) 
     
     def create_combined_landscape_breakdown(
@@ -321,7 +329,8 @@ class RMSDVisualizer(BaseVisualizer):
         output_dir: Optional[Path] = None,
         format: str = "pdf",
         show: bool = False,
-        max_rmsd: Optional[float] = None
+        max_rmsd: Optional[float] = None,
+        system_name: Optional[str] = None
     ) -> Dict[str, plt.Figure]:
         """
         Create breakdown plots of combined RMSD landscapes by model and recycle.
@@ -342,10 +351,76 @@ class RMSDVisualizer(BaseVisualizer):
             output_dir=output_dir,
             format=format,
             show=show,
-            max_rmsd=max_rmsd
+            max_rmsd=max_rmsd,
+            system_name=system_name
         ) 
         
+    def create_scatter_plot(
+        self,
+        storage: Storage,
+        output_dir: Optional[Path] = None,
+        format: str = "pdf",
+        show: bool = False,
+        max_rmsd: Optional[float] = None,
+        system_name: Optional[str] = None
+    ) -> plt.Figure:
+        """
+        Create a publication-ready scatter plot combining all predictions from all positions.
+        Points are colored by pLDDT values using the AlphaFold2 color scheme.
         
+        Args:
+            storage: H5 storage instance
+            output_dir: Directory to save plots
+            format: Output format (pdf, png)
+            show: Whether to display plots
+            max_rmsd: Optional maximum RMSD value for plot scaling
+            system_name: Optional name of the system for the title
+            
+        Returns:
+            Generated figure
+        """
+        return create_scatter_plot(
+            storage=storage,
+            output_dir=output_dir,
+            format=format,
+            show=show,
+            max_rmsd=max_rmsd,
+            system_name=system_name
+        )
+    
+    def create_combined_scatter_plot(
+        self,
+        storage: Storage,
+        output_dir: Optional[Path] = None,
+        format: str = "pdf",
+        show: bool = False,
+        max_rmsd: Optional[float] = None,
+        system_name: Optional[str] = None
+    ) -> plt.Figure:
+        """
+        Create a publication-ready scatter plot combining all predictions from all positions.
+        Points are colored by pLDDT values using the AlphaFold2 color scheme.
+        
+        Args:
+            storage: H5 storage instance
+            output_dir: Directory to save plots
+            format: Output format (pdf, png)
+            show: Whether to display plots
+            max_rmsd: Optional maximum RMSD value for plot scaling
+            system_name: Optional name of the system for the title
+            
+        Returns:
+            Generated figure
+        """
+        return create_combined_scatter_plot(
+            storage=storage,
+            output_dir=output_dir,
+            format=format,
+            show=show,
+            max_rmsd=max_rmsd,
+            system_name=system_name
+        )
+    
     def apriori_create_summary_landscape(
         self,
         storages: Dict[str, Storage],

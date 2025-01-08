@@ -12,7 +12,7 @@ from .utils import show_summary, console
 
 logger = logging.getLogger(__name__)
 
-def submit_jobs_cmd(args):
+def run(args):
     """Submit protein experiment jobs to the SLURM queue."""
     with Progress(
         SpinnerColumn(),

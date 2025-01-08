@@ -69,7 +69,7 @@ class RMSDAnalysis:
         
         # Create output directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        (self.output_dir / "plots").mkdir(exist_ok=True)
+
         
     def _load_reference(self, pdb_path: Union[str, Path]) -> np.ndarray:
         """Load reference coordinates from PDB file."""
@@ -199,6 +199,7 @@ class RMSDAnalysis:
             try:
                 info = self._extract_info_from_name(predictions[0].name)
                 logger.debug(f"First prediction info: {info}")
+                
                 # Check if we already have data for this position/model/recycle
                 if (info['position'] in self.storage._memory_store['positions'] and
                     info['model'] in self.storage._memory_store['positions'][info['position']] and
@@ -234,6 +235,7 @@ class RMSDAnalysis:
                     
                 try:
                     info = self._extract_info_from_name(result.model_name)
+                    
                     key = (info['model'], info['recycle'])
                     if key not in model_seed_counts:
                         model_seed_counts[key] = set()

@@ -20,7 +20,8 @@ def create_rmsd_landscape(
     rmsd_ref2: Optional[List[float]] = None,
     title: Optional[str] = None,
     max_rmsd: Optional[float] = None,
-    show: bool = False
+    show: bool = False,
+    system_name: Optional[str] = None
 ) -> plt.Figure:
     """
     Create publication-ready RMSD landscape plot with 2D histogram.
@@ -69,8 +70,8 @@ def create_rmsd_landscape(
                  alpha=0.8, linewidth=1.5, dashes=(5, 5))
     
     # Customize main plot
-    ax_main.set_xlabel('RMSD vs Reference 1 (Å)', fontsize=10, labelpad=8)
-    ax_main.set_ylabel('RMSD vs Reference 2 (Å)' if rmsd_ref2 is not None else 'RMSD vs Reference 1 (Å)',
+    ax_main.set_xlabel('RMSD vs State 1 (Å)', fontsize=10, labelpad=8)
+    ax_main.set_ylabel('RMSD vs State 2 (Å)' if rmsd_ref2 is not None else 'RMSD vs State 1 (Å)',
                       fontsize=10, labelpad=8)
     ax_main.tick_params(axis='both', which='major', labelsize=8)
     ax_main.tick_params(axis='both', which='minor', labelsize=6)
@@ -165,7 +166,8 @@ def create_combined_landscape(
     output_dir: Optional[Path] = None,
     format: str = "pdf",
     show: bool = False,
-    max_rmsd: Optional[float] = None
+    max_rmsd: Optional[float] = None,
+    system_name: Optional[str] = None
 ) -> plt.Figure:
     """
     Create a single landscape plot combining all predictions from all positions.
@@ -248,8 +250,8 @@ def create_combined_landscape(
                  alpha=0.8, linewidth=1.5, dashes=(5, 5))
     
     # Customize main plot
-    ax_main.set_xlabel('RMSD vs Reference 1 (Å)', fontsize=10, labelpad=8)
-    ax_main.set_ylabel('RMSD vs Reference 2 (Å)', fontsize=10, labelpad=8)
+    ax_main.set_xlabel('RMSD vs State 1 (Å)', fontsize=10, labelpad=8)
+    ax_main.set_ylabel('RMSD vs State 2 (Å)', fontsize=10, labelpad=8)
     ax_main.tick_params(axis='both', which='major', labelsize=8)
     ax_main.tick_params(axis='both', which='minor', labelsize=6)
     ax_main.grid(True, linestyle='--', alpha=0.3, which='major')
@@ -317,7 +319,7 @@ def create_combined_landscape(
     ax_main.set_ylim(0, global_max_rmsd)
     
     # Add single title with adjusted position
-    plt.suptitle("Combined RMSD Landscape",
+    plt.suptitle(f"{system_name} Landscape",
                  fontsize=12, y=0.95, fontweight='bold')
     
     # Adjust layout with better spacing
@@ -343,7 +345,8 @@ def create_combined_landscape_breakdown(
     output_dir: Optional[Path] = None,
     format: str = "pdf",
     show: bool = False,
-    max_rmsd: Optional[float] = None
+    max_rmsd: Optional[float] = None,
+    system_name: Optional[str] = None
 ) -> Dict[str, plt.Figure]:
     """
     Create breakdown plots of combined RMSD landscapes by model and recycle.
@@ -407,7 +410,7 @@ def create_combined_landscape_breakdown(
             fig = create_rmsd_landscape(
                 rmsd_ref1=np.array(model_rmsd1),
                 rmsd_ref2=np.array(model_rmsd2) if model_rmsd2 else None,
-                title=f"All Positions - Model {model}",
+                title=f"{system_name} all positions - Model {model}",
                 max_rmsd=global_max_rmsd,
                 show=False
             )
@@ -441,7 +444,7 @@ def create_combined_landscape_breakdown(
             fig = create_rmsd_landscape(
                 rmsd_ref1=np.array(recycle_rmsd1),
                 rmsd_ref2=np.array(recycle_rmsd2) if recycle_rmsd2 else None,
-                title=f"All Positions - Recycle {recycle}",
+                title=f"{system_name} all positions - Recycle {recycle}",
                 max_rmsd=global_max_rmsd,
                 show=False
             )
@@ -475,7 +478,7 @@ def create_combined_landscape_breakdown(
             fig = create_rmsd_landscape(
                 rmsd_ref1=np.array(cumulative_0n_rmsd1),
                 rmsd_ref2=np.array(cumulative_0n_rmsd2) if cumulative_0n_rmsd2 else None,
-                title=f"All Positions - Cumulative Recycles 0-{recycle}",
+                title=f"{system_name} all positions - Cumulative Recycles 0-{recycle}",
                 max_rmsd=global_max_rmsd,
                 show=False
             )
@@ -512,7 +515,7 @@ def create_combined_landscape_breakdown(
             fig = create_rmsd_landscape(
                 rmsd_ref1=np.array(cumulative_1n_rmsd1),
                 rmsd_ref2=np.array(cumulative_1n_rmsd2) if cumulative_1n_rmsd2 else None,
-                title=f"All Positions - Cumulative Recycles 1-{recycle}",
+                title=f"{system_name} all positions - Cumulative Recycles 1-{recycle}",
                 max_rmsd=global_max_rmsd,
                 show=False
             )
@@ -624,8 +627,8 @@ def apriori_create_summary_landscape(
                      alpha=0.8, linewidth=1.5, dashes=(5, 5))
         
         # Customize main plot
-        ax_main.set_xlabel('RMSD vs Reference 1 (Å)', fontsize=10, labelpad=8)
-        ax_main.set_ylabel('RMSD vs Reference 2 (Å)', fontsize=10, labelpad=8)
+        ax_main.set_xlabel('RMSD vs State 1 (Å)', fontsize=10, labelpad=8)
+        ax_main.set_ylabel('RMSD vs State 2 (Å)', fontsize=10, labelpad=8)
         ax_main.tick_params(axis='both', which='major', labelsize=8)
         ax_main.tick_params(axis='both', which='minor', labelsize=6)
         ax_main.grid(True, linestyle='--', alpha=0.3, which='major')
@@ -802,8 +805,8 @@ def iterative_create_summary_landscape(
                      alpha=0.8, linewidth=1.5, dashes=(5, 5))
         
         # Customize main plot
-        ax_main.set_xlabel('RMSD vs Reference 1 (Å)', fontsize=10, labelpad=8)
-        ax_main.set_ylabel('RMSD vs Reference 2 (Å)', fontsize=10, labelpad=8)
+        ax_main.set_xlabel('RMSD vs State 1 (Å)', fontsize=10, labelpad=8)
+        ax_main.set_ylabel('RMSD vs State 2 (Å)', fontsize=10, labelpad=8)
         ax_main.tick_params(axis='both', which='major', labelsize=8)
         ax_main.tick_params(axis='both', which='minor', labelsize=6)
         ax_main.grid(True, linestyle='--', alpha=0.3, which='major')

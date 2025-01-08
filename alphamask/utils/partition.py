@@ -39,12 +39,19 @@ class PartitionManager:
             partitions: List of partition names (e.g., ["clara", "paula"])
             gpu_types: List of GPU types (e.g., ["rtx2080ti", "v100", "a30"])
         """
-        # Simple fixed assignments for different GPU types
-        self.assignments = [
+        # Default assignments if none specified
+        default_assignments = [
             ("clara", "v100"),
             ("paula", "a30"),
             ("clara", "rtx2080ti")
         ]
+        
+        # If partitions and GPU types are specified, create assignments from those
+        if partitions and gpu_types:
+            self.assignments = [(partitions[0], gpu_types[0])]
+        else:
+            self.assignments = default_assignments
+            
         self.current_index = 0
         self.partitions = {}
         

@@ -158,13 +158,18 @@ def _process_experiment_type(
         )
     
     elif exp_type == "iterative":
+        # Create base iterative directory
+        iterative_dir = analysis_dir / "iterative"
+        iterative_dir.mkdir(parents=True, exist_ok=True)
+        
         # Process WT first
         wt_success = _process_iterative_analysis(
             protein_id=protein_id,
             wt_dir=exp_dir / "WT",
-            analysis_dir=analysis_dir / "iterative" / "WT",
+            analysis_dir=iterative_dir / "WT",
             analysis_config=analysis_config,
-            args=args
+            args=args,
+            system_name="WT"
         )
         success &= wt_success
         
@@ -181,9 +186,10 @@ def _process_experiment_type(
                     mut_success = _process_iterative_analysis(  # Reuse the same function for mutants
                         protein_id=protein_id,
                         wt_dir=mutation_dir,  # Use mutation directory instead of WT
-                        analysis_dir=analysis_dir / "iterative" / mutation_name,
+                        analysis_dir=iterative_dir / mutation_name,
                         analysis_config=analysis_config,
-                        args=args
+                        args=args,
+                        system_name=mutation_name
                     )
                     success &= mut_success
                 else:
@@ -198,40 +204,122 @@ def _process_iterative_analysis(
     wt_dir: Path,
     analysis_dir: Path,
     analysis_config: AnalysisConfig,
-    args: argparse.Namespace
+    args: argparse.Namespace,
+    system_name: Optional[str] = None
 ) -> bool:
     """Process wild-type analysis."""
     if not wt_dir.exists():
         return True
         
     try:
-        analysis_dir.mkdir(parents=True, exist_ok=True)
+        # Filter regions based on command line argument
+        regions_to_process = analysis_config.regions
+        if args.regions:
+            logger.info(f"Filtering regions based on command line argument: {args.regions}")
+            regions_to_process = [r for r in analysis_config.regions if r.name in args.regions]
+            if not regions_to_process:
+                logger.warning(f"No matching regions found for {args.regions}. Available regions: {[r.name for r in analysis_config.regions]}")
+                return False
         
-        # Initialize analysis pipeline
-        pipeline = RMSDAnalysis(
-            config=analysis_config,
-            output_dir=analysis_dir,
-            save_plots=not args.no_plots,
-            plot_format=args.format,
-            force=args.force,
-            parallel=args.parallel,
-            overwrite=args.overwrite
-        )
-        
-        # Run RMSD analysis
-        results = pipeline.run_analysis(
-            exp_dir=wt_dir / "out" / "compressed",
-            incremental=args.incremental,
-            overwrite=args.overwrite
-        )
-        
-        if results and not args.no_plots:
-            _generate_visualizations(
-                pipeline=pipeline,
-                protein_id=protein_id,
-                output_dir=analysis_dir,
-                args=args
+        # Process each region separately
+        for region in regions_to_process:
+            logger.info(f"Processing region: {region.name} (residues {region.start}-{region.end})")
+            logger.debug(f"Region details: start={region.start}, end={region.end}, description='{region.description}'")
+            
+            # Create region-specific config
+            region_config = AnalysisConfig(
+                references=analysis_config.references,
+                regions=[region],  # Only use this specific region
+                atom_selection=analysis_config.atom_selection,
+                statistical_tests=analysis_config.statistical_tests,
+                plots=analysis_config.plots,
+                export=analysis_config.export,
+                debug=analysis_config.debug
             )
+            logger.debug(f"Created region-specific config with atom_selection='{region_config.atom_selection}' and single region {region.name}")
+            
+            # Create region-specific output directory
+            region_analysis_dir = analysis_dir.parent / region.name / analysis_dir.name
+            region_analysis_dir.mkdir(parents=True, exist_ok=True)
+            logger.debug(f"Created region-specific output directory: {region_analysis_dir}")
+            
+            # Initialize analysis pipeline with region-specific config
+            pipeline = RMSDAnalysis(
+                config=region_config,
+                output_dir=region_analysis_dir,
+                save_plots=not args.no_plots,
+                plot_format=args.format,
+                force=args.force,
+                parallel=args.parallel,
+                overwrite=args.overwrite
+            )
+            
+            # Run RMSD analysis
+            logger.debug(f"Running RMSD analysis for region {region.name} with exp_dir={wt_dir / 'out' / 'compressed'}")
+            results = pipeline.run_analysis(
+                exp_dir=wt_dir / "out" / "compressed",
+                incremental=args.incremental,
+                overwrite=args.overwrite,
+            )
+            
+            if results:
+                # Calculate max_rmsd from all positions
+                max_rmsd = 0
+                positions = pipeline.storage.get_positions()
+                
+                # Create progress bar if not in debug mode
+                if not args.debug:
+                    with Progress(
+                        SpinnerColumn(),
+                        TextColumn("[progress.description]{task.description}"),
+                        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                        console=console
+                    ) as progress:
+                        task = progress.add_task(
+                            f"[cyan]Calculating RMSD for region {region.name}...",
+                            total=len(positions)
+                        )
+                        
+                        for pos in positions:
+                            recycle_data = pipeline.storage.get_all_recycle_data(pos)
+                            for model_data in recycle_data.values():
+                                for data in model_data.values():
+                                    if data.rmsd_ref1 is not None:
+                                        current_max = np.max(data.rmsd_ref1)
+                                        max_rmsd = max(max_rmsd, current_max)
+                                    if data.rmsd_ref2 is not None:
+                                        current_max = np.max(data.rmsd_ref2)
+                                        max_rmsd = max(max_rmsd, current_max)
+                            progress.update(task, advance=1)
+                else:
+                    # Debug mode - show detailed logs
+                    logger.debug(f"Calculating max RMSD for positions {positions}")
+                    for pos in positions:
+                        recycle_data = pipeline.storage.get_all_recycle_data(pos)
+                        for model_data in recycle_data.values():
+                            for data in model_data.values():
+                                if data.rmsd_ref1 is not None:
+                                    current_max = np.max(data.rmsd_ref1)
+                                    
+                                    max_rmsd = max(max_rmsd, current_max)
+                                if data.rmsd_ref2 is not None:
+                                    current_max = np.max(data.rmsd_ref2)
+                                   
+                                    max_rmsd = max(max_rmsd, current_max)
+                
+                # Round to the nearest biggest integer
+                max_rmsd = int(max_rmsd) + (1 if max_rmsd % 1 > 0 else 0)
+                logger.info(f"Global max RMSD: {max_rmsd:.2f} Å")
+                
+                if not args.no_plots:
+                    _generate_visualizations(
+                        pipeline=pipeline,
+                        protein_id=protein_id,
+                        output_dir=region_analysis_dir,
+                        args=args,
+                        max_rmsd=max_rmsd,
+                        system_name=system_name
+                    )
         
         return True
         
@@ -246,7 +334,8 @@ def _generate_visualizations(
     protein_id: str,
     output_dir: Path,
     args: argparse.Namespace,
-    max_rmsd: Optional[float] = None
+    max_rmsd: Optional[float] = None,
+    system_name: Optional[str] = None
 ) -> None:
     """Generate visualization plots."""
     try:
@@ -259,26 +348,52 @@ def _generate_visualizations(
         # Create directory for combined analyses
         combined_dir = output_dir / "combined_analysis"
         combined_dir.mkdir(parents=True, exist_ok=True)
+        title = f"Iterative {protein_id.split('_')[0].capitalize()} {system_name}"
         
-        # Generate combined landscape plot
-        pipeline.visualizer.create_combined_landscape(
-            storage=pipeline.storage,
-            output_dir=combined_dir,
-            format=args.format,
-            show=False,
-            max_rmsd=max_rmsd
-        )
-        logger.info("Generated combined landscape plot")
+        # Generate combined landscape plot if it doesn't exist
+        landscape_path = combined_dir / f"combined_landscape.{args.format}"
+        if not landscape_path.exists() or args.overwrite:
+            pipeline.visualizer.create_combined_landscape(
+                storage=pipeline.storage,
+                output_dir=combined_dir,
+                format=args.format,
+                show=False,
+                max_rmsd=max_rmsd,
+                system_name=title
+            )
+            logger.info("Generated combined landscape plot")
+        else:
+            logger.info("Combined landscape plot already exists, skipping")
         
-        # Generate breakdown plots for all positions
-        pipeline.visualizer.create_combined_landscape_breakdown(
-            storage=pipeline.storage,
-            output_dir=combined_dir,
-            format=args.format,
-            show=False,
-            max_rmsd=max_rmsd
-        )
-        logger.info("Generated combined landscape breakdown plots")
+        # Create combined scatter plot if it doesn't exist
+        scatter_path = combined_dir / f"combined_scatter_plot.{args.format}"
+        if not scatter_path.exists() or args.overwrite:
+            pipeline.visualizer.create_combined_scatter_plot(
+                storage=pipeline.storage,
+                output_dir=combined_dir,
+                format=args.format,
+                show=False,
+                max_rmsd=max_rmsd,
+                system_name=title
+            )
+            logger.info("Generated combined scatter plot")
+        else:
+            logger.info("Combined scatter plot already exists, skipping")
+        
+        # Generate breakdown plots if they don't exist
+        breakdown_dir = combined_dir / "model_breakdown"
+        if not breakdown_dir.exists() or args.overwrite or not any(breakdown_dir.iterdir()):
+            pipeline.visualizer.create_combined_landscape_breakdown(
+                storage=pipeline.storage,
+                output_dir=combined_dir,
+                format=args.format,
+                show=False,
+                max_rmsd=max_rmsd,
+                system_name=system_name
+            )
+            logger.info("Generated combined landscape breakdown plots")
+        else:
+            logger.info("Combined landscape breakdown plots already exist, skipping")
         
         # Only generate per-position plots if explicitly requested
         if args.per_position_plots:
@@ -286,6 +401,11 @@ def _generate_visualizations(
             for pos in sorted(positions):
                 pos_dir = output_dir / f"pos_{pos}"
                 pos_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Check if position plots already exist
+                if not args.overwrite and any(pos_dir.iterdir()):
+                    logger.info(f"Plots for position {pos} already exist, skipping")
+                    continue
                 
                 # Detailed plots
                 pipeline.visualizer.create_plots(
@@ -323,9 +443,7 @@ def _generate_visualizations(
                         max_rmsd=max_rmsd
                     )
                     logger.info(f"Generated recycle analysis plots for position {pos}")
-        else:
-            logger.info("Skipping per-position plots (use --per-position-plots to generate them)")
-                
+                    
     except Exception as e:
         logger.error(f"Failed to generate plots for {protein_id}: {str(e)}")
         if logger.isEnabledFor(logging.DEBUG):
@@ -491,101 +609,143 @@ def _process_iterative_experiments(
     """Process iterative masking experiments."""
     success = True
     
-    # Calculate global max RMSD across all experiments first
-    max_rmsd = 0
-    storages = {}
+    # Create base iterative directory
+    iterative_dir = analysis_dir / "iterative"
+    iterative_dir.mkdir(parents=True, exist_ok=True)
     
-    # First pass: analyze and collect max RMSD
-    for experiment in experiments:
-        exp_name = experiment['name']
-        exp_subdir = exp_dir / exp_name
-        if exp_subdir.exists():
-            try:
-                exp_analysis_dir = analysis_dir / exp_name
-                exp_analysis_dir.mkdir(parents=True, exist_ok=True)
-                
-                pipeline = RMSDAnalysis(
-                    config=analysis_config,
-                    output_dir=exp_analysis_dir,
-                    save_plots=not args.no_plots,
-                    plot_format=args.format,
-                    force=args.force,
-                    parallel=args.parallel,
-                    overwrite=args.overwrite
-                )
-                
-                # Run RMSD analysis
-                results = pipeline.run_analysis(
-                    exp_dir=exp_subdir / "out" / "compressed",
-                    incremental=args.incremental,
-                    overwrite=args.overwrite
-                )
-                
-                if results:
-                    storages[exp_name] = pipeline.storage
-                    # Update max_rmsd
-                    positions = pipeline.storage.get_positions()
-                    for pos in positions:
-                        recycle_data = pipeline.storage.get_all_recycle_data(pos)
-                        for model_data in recycle_data.values():
-                            for data in model_data.values():
-                                if data.rmsd_ref1 is not None:
-                                    max_rmsd = max(max_rmsd, np.max(data.rmsd_ref1))
-                                if data.rmsd_ref2 is not None:
-                                    max_rmsd = max(max_rmsd, np.max(data.rmsd_ref2))
-            except Exception as e:
-                logger.error(f"Analysis failed for {protein_id} iterative {exp_name}: {str(e)}")
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(traceback.format_exc())
-                success = False
+    # Filter regions based on command line argument
+    regions_to_process = analysis_config.regions
+    if args.regions:
+        logger.info(f"Filtering regions based on command line argument: {args.regions}")
+        regions_to_process = [r for r in analysis_config.regions if r.name in args.regions]
+        if not regions_to_process:
+            logger.warning(f"No matching regions found for {args.regions}. Available regions: {[r.name for r in analysis_config.regions]}")
+            return False
     
-    # Round to the nearest biggest integer
-    max_rmsd = int(max_rmsd) + (1 if max_rmsd % 1 > 0 else 0)
-    logger.info(f"Global max RMSD across all experiments: {max_rmsd:.2f} Å")
-    
-    # Second pass: generate visualizations with consistent max_rmsd
-    for experiment in experiments:
-        exp_name = experiment['name']
-        exp_subdir = exp_dir / exp_name
-        if exp_subdir.exists() and exp_name in storages:
-            try:
-                exp_analysis_dir = analysis_dir / exp_name
-                if not args.no_plots:
-                    _generate_visualizations(
-                        pipeline=pipeline,
-                        protein_id=protein_id,
+    # Process each region separately
+    for region in regions_to_process:
+        logger.info(f"Processing region: {region.name} (residues {region.start}-{region.end})")
+        logger.debug(f"Region details: start={region.start}, end={region.end}, description='{region.description}'")
+        
+        # Create region-specific config
+        region_config = AnalysisConfig(
+            references=analysis_config.references,
+            regions=[region],  # Only use this specific region
+            atom_selection=analysis_config.atom_selection,
+            statistical_tests=analysis_config.statistical_tests,
+            plots=analysis_config.plots,
+            export=analysis_config.export,
+            debug=analysis_config.debug
+        )
+        logger.debug(f"Created region-specific config with atom_selection='{region_config.atom_selection}' and single region {region.name}")
+        
+        # Create region-specific output directory under iterative/
+        region_analysis_dir = iterative_dir / region.name
+        region_analysis_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Calculate global max RMSD across all experiments first
+        max_rmsd = 0
+        storages = {}
+        
+        # First pass: analyze and collect max RMSD
+        for experiment in experiments:
+            exp_name = experiment['name']
+            exp_subdir = exp_dir / exp_name
+            if exp_subdir.exists():
+                try:
+                    # Create experiment directory under region directory
+                    exp_analysis_dir = region_analysis_dir / exp_name
+                    exp_analysis_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    logger.info(f"Processing experiment: {exp_name} for region {region.name}")
+                    pipeline = RMSDAnalysis(
+                        config=region_config,  # Use region-specific config
                         output_dir=exp_analysis_dir,
-                        args=args,
-                        max_rmsd=max_rmsd  # Pass consistent max_rmsd
+                        save_plots=not args.no_plots,
+                        plot_format=args.format,
+                        force=args.force,
+                        parallel=args.parallel,
+                        overwrite=args.overwrite
                     )
+                    logger.debug(f"Initialized RMSDAnalysis pipeline for region {region.name} with config: atom_selection='{region_config.atom_selection}', region={region.start}-{region.end}")
+                    
+                    # Run RMSD analysis
+                    results = pipeline.run_analysis(
+                        exp_dir=exp_subdir / "out" / "compressed",
+                        incremental=args.incremental,
+                        overwrite=args.overwrite
+                    )
+                    
+                    if results:
+                        storages[exp_name] = pipeline.storage
+                        # Update max_rmsd
+                        positions = pipeline.storage.get_positions()
+                        logger.debug(f"Analyzing positions {positions} for region {region.name} ({region.start}-{region.end})")
+                        for pos in positions:
+                            recycle_data = pipeline.storage.get_all_recycle_data(pos)
+                            for model_data in recycle_data.values():
+                                for data in model_data.values():
+                                    if data.rmsd_ref1 is not None:
+                                        current_max = np.max(data.rmsd_ref1)
+                                        logger.debug(f"Region {region.name}: Position {pos} RMSD to ref1 max = {current_max:.2f} Å")
+                                        max_rmsd = max(max_rmsd, current_max)
+                                    if data.rmsd_ref2 is not None:
+                                        current_max = np.max(data.rmsd_ref2)
+                                        logger.debug(f"Region {region.name}: Position {pos} RMSD to ref2 max = {current_max:.2f} Å")
+                                        max_rmsd = max(max_rmsd, current_max)
+                except Exception as e:
+                    logger.error(f"Analysis failed for {protein_id} iterative {exp_name}: {str(e)}")
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(traceback.format_exc())
+                    success = False
+        
+        # Round to the nearest biggest integer
+        max_rmsd = int(max_rmsd) + (1 if max_rmsd % 1 > 0 else 0)
+        logger.info(f"Global max RMSD across all experiments for region {region.name}: {max_rmsd:.2f} Å")
+        
+        # Second pass: generate visualizations with consistent max_rmsd
+        for experiment in experiments:
+            exp_name = experiment['name']
+            exp_subdir = exp_dir / exp_name
+            if exp_subdir.exists() and exp_name in storages:
+                try:
+                    exp_analysis_dir = region_analysis_dir / exp_name
+                    if not args.no_plots:
+                        _generate_visualizations(
+                            pipeline=pipeline,
+                            protein_id=protein_id,
+                            output_dir=exp_analysis_dir,
+                            args=args,
+                            max_rmsd=max_rmsd  # Pass consistent max_rmsd
+                        )
+                except Exception as e:
+                    logger.error(f"Visualization failed for {protein_id} iterative {exp_name}: {str(e)}")
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(traceback.format_exc())
+                    success = False
+        
+        # Create summary landscape plot if we have multiple experiments
+        if len(storages) > 1 and not args.no_plots:
+            try:
+                # Format experiment names for better display
+                formatted_storages = {}
+                for exp_name, storage in storages.items():
+                    # Extract mutation from experiment name (e.g., "I89S" from "kortemme_et_al_I89S")
+                    mutation = exp_name.split('_')[-1]
+                    formatted_storages[mutation] = storage
+                
+                pipeline.visualizer.iterative_create_summary_landscape(
+                    storages=formatted_storages,  # Use formatted storage names
+                    output_dir=region_analysis_dir,
+                    format=args.format,
+                    show=False,
+                    max_rmsd=max_rmsd
+                )
+                logger.info(f"Generated iterative summary landscape plot for region {region.name}")
             except Exception as e:
-                logger.error(f"Visualization failed for {protein_id} iterative {exp_name}: {str(e)}")
+                logger.error(f"Failed to generate iterative summary plot for region {region.name}: {str(e)}")
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(traceback.format_exc())
                 success = False
-    
-    # Create summary landscape plot if we have multiple experiments
-    if len(storages) > 1 and not args.no_plots:
-        try:
-            # Format experiment names for better display
-            formatted_storages = {}
-            for exp_name, storage in storages.items():
-                # Extract mutation from experiment name (e.g., "I89S" from "kortemme_et_al_I89S")
-                mutation = exp_name.split('_')[-1]
-                formatted_storages[mutation] = storage
-            
-            pipeline.visualizer.iterative_create_summary_landscape(
-                storages=formatted_storages,
-                output_dir=analysis_dir,
-                format=args.format,
-                show=False,
-                max_rmsd=max_rmsd
-            )
-            logger.info("Generated iterative summary landscape plot")
-        except Exception as e:
-            logger.error(f"Failed to generate iterative summary plot: {str(e)}")
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(traceback.format_exc())
-            success = False
     
     return success

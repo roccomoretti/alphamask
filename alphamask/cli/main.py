@@ -18,7 +18,7 @@ logger.setLevel(logging.DEBUG)
 
 from .commands import (
     setup_cmd,
-    submit_jobs_cmd,
+    run,
     help_cmd,
     predict_job_cmd,
     analyze_cmd,
@@ -574,7 +574,7 @@ def main():
         elif args.command == "setup":
             setup_cmd(args)
         elif args.command == "run":
-            submit_jobs_cmd(args)
+            run(args)
         elif args.command == "help":
             help_cmd(args)
         elif args.command == "predict":

@@ -16,6 +16,8 @@ from .types import (
     IterativeMasking, AprioriMasking, FrustraMasking
 )
 
+import frustrapy
+
 # Get logger for this module
 logger = logging.getLogger("alphamask.experiments.base")
 
@@ -894,6 +896,13 @@ class FrustraExperiment(BaseExperiment):
         
         if not protein_config.frustra_masking.enabled:
             raise ExperimentError("Frustra masking is not enabled in configuration")
+        
+        # Create analysis directory for storing FrustraPy results
+        self.analysis_dir = self.working_dir / "analysis" / "frustra" / "configurational"
+        self.results_file = self.analysis_dir / "results.pkl"
+        
+        # Initialize empty list for storing mutations
+        self.mutations = []
     
     def validate(self) -> None:
         """Validate Frustra masking configuration"""
@@ -917,6 +926,9 @@ class FrustraExperiment(BaseExperiment):
             # Create standard subdirectories
             for subdir in ["configs", "scripts", "logs", "in", "out", "schema"]:
                 (self.working_dir / subdir).mkdir(parents=True, exist_ok=True)
+            
+            # Create analysis directory structure
+            self.analysis_dir.mkdir(parents=True, exist_ok=True)
         else:
             logger.info(f"[DRY RUN] Would create directory: {self.controls_dir}")
 
@@ -930,6 +942,127 @@ class FrustraExperiment(BaseExperiment):
             dry_run=self.dry_run,
             schema_path=self.schema_path
         ))
+    
+    def _run_frustra_analysis(self, pdb_path: Path) -> List[int]:
+        """Run FrustraPy analysis on the best PDB from control prediction
+        
+        Args:
+            pdb_path: Path to the PDB file to analyze
+            
+        Returns:
+            List of top N positions based on frustration scores
+        """
+        try:
+            # Create FrustraPy analysis directory if it doesn't exist
+            self.analysis_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create a subdirectory for the PDB file
+            pdbs_dir = self.analysis_dir / "best_pdb"
+            pdbs_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy PDB file to analysis directory
+            import shutil
+            pdb_file = pdb_path.name
+            dest_path = pdbs_dir / pdb_file
+            shutil.copy(str(pdb_path), str(dest_path))
+            
+            # Run FrustraPy analysis in configurational mode
+            logger.info(f"Running FrustraPy analysis on {dest_path}")
+            pdb_config, plots_config, density_results, _ = frustrapy.calculate_frustration(
+                pdb_file=str(dest_path),
+                mode="configurational",
+                results_dir=str(self.analysis_dir),
+                debug="INFO",
+                chain="A"  # Assuming chain A, might need to make configurable
+            )
+            
+            # Convert density results to a DataFrame for easier processing
+            import pandas as pd
+            data = []
+            for density in density_results.densities:
+                data.append({
+                    'Residue': density.residue_number,
+                    'Chain': density.chain_id,
+                    'Total_Density': density.total_density,
+                    'Highly_Frustrated': density.highly_frustrated,
+                    'Neutrally_Frustrated': density.neutrally_frustrated,
+                    'Minimally_Frustrated': density.minimally_frustrated,
+                    'Rel_Highly_Frustrated': density.rel_highly_frustrated,
+                    'Rel_Neutrally_Frustrated': density.rel_neutrally_frustrated,
+                    'Rel_Minimally_Frustrated': density.rel_minimally_frustrated
+                })
+            
+            df = pd.DataFrame(data)
+            
+            # Sort by minimally frustrated ratio (descending) to get top positions
+            # This can be made configurable based on the metric and direction
+            df = df.sort_values(by='Rel_Minimally_Frustrated', ascending=False)
+            
+            # Get top N positions
+            top_n = min(self.protein_config.frustra_masking.top_positions, len(df))
+            positions = df.head(top_n)['Residue'].tolist()
+            positions.sort()  # Sort positions in ascending order
+            
+            # Save complete results
+            import pickle
+            results = {
+                'positions': positions,
+                'mode': 'configurational',
+                'pdb': str(dest_path),
+                'density_data': df.to_dict('records'),
+                'plots_config': plots_config,
+                'pdb_config': pdb_config
+            }
+            
+            with open(self.results_file, 'wb') as f:
+                pickle.dump(results, f)
+            
+            logger.info(f"Selected top {len(positions)} positions: {positions}")
+            return positions
+            
+        except Exception as e:
+            logger.error(f"Failed to run FrustraPy analysis: {str(e)}")
+            raise
+    
+    def _create_mutation_experiments(self, positions: List[int]) -> None:
+        """Create mutation experiments for the identified positions
+        
+        Args:
+            positions: List of positions identified by FrustraPy analysis
+        """
+        for pos in positions:
+            # Get the original amino acid at this position
+            orig_aa = self.protein_config.sequence[pos-1]
+            
+            # Create mutation directory
+            mutation_name = f"pos_{pos}"
+            mutation_dir = self.working_dir / mutation_name
+            
+            if not self.dry_run:
+                mutation_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Create standard condition directories
+                conditions = [
+                    "masked_mutated",
+                    "masked_unmutated",
+                    "unmasked_mutated",
+                    "unmasked_unmutated"
+                ]
+                
+                for condition in conditions:
+                    condition_dir = mutation_dir / condition
+                    condition_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Create standard subdirectories in each condition
+                    for subdir in ["configs", "scripts", "logs", "in", "out"]:
+                        (condition_dir / subdir).mkdir(parents=True, exist_ok=True)
+            
+            # Store mutation information
+            self.mutations.append({
+                'position': pos,
+                'original_aa': orig_aa,
+                'directory': mutation_dir
+            })
     
     def _create_config(self) -> ExperimentConfig:
         """Create configuration for Frustra masking experiment"""
@@ -945,13 +1078,14 @@ class FrustraExperiment(BaseExperiment):
             "num_seeds": self.defaults.get('num_seeds', 2),
             "setup_path": str(self.slurm_config.setup_path),
             "pipeline_type": "masking",
-            "top_positions": self.protein_config.frustra_masking.top_positions,
             "msa_method": "custom_a3m",  # Always use custom MSA
             "custom_a3m_path": str(shared_msa_path),  # Use shared MSA path
             "masking_mode": "list",
             "mask_msa": True,
             "mask_deletion_matrix": True,
-            "mask_identity": "X"
+            "mask_identity": "X",
+            "positions": [],  # Will be set later for each condition
+            "cols": []  # Will be set later for each condition
         }
         
         return ExperimentConfig(**config)
@@ -959,8 +1093,16 @@ class FrustraExperiment(BaseExperiment):
     def submit(self) -> bool:
         """Submit Frustra masking experiment jobs to SLURM"""
         try:
+            # Ensure we're using the correct partition and GPU type
+            logger.info(f"Using partition {self.slurm_config.partition} with GPU type {self.slurm_config.gpu_type}")
+            
             self.validate()
             self.setup()
+            
+            # Get sequence hash
+            from colabdesign.af.contrib import predict
+            seq_hash = predict.get_hash(self.protein_config.sequence)[:5]
+            logger.info(f"Using sequence hash: {seq_hash}")
             
             # Get protein root directory for shared MSA
             protein_dir = self.working_dir.parent
@@ -968,6 +1110,14 @@ class FrustraExperiment(BaseExperiment):
             shared_msa_dir.mkdir(parents=True, exist_ok=True)
             
             # Initialize a temporary job manager to handle MSA generation
+            msa_slurm_config = SlurmJobConfig(
+                partition=self.slurm_config.partition,
+                gpu_type=self.slurm_config.gpu_type,
+                setup_path=self.slurm_config.setup_path,
+                container_path=self.slurm_config.container_path,
+                schema_path=self.slurm_config.schema_path
+            )
+            
             temp_job_manager = SlurmJobManager(
                 experiment_config=ExperimentConfig(
                     sequence=self.protein_config.sequence,
@@ -977,33 +1127,148 @@ class FrustraExperiment(BaseExperiment):
                     pipeline_type="default",
                     msa_method="mmseqs2"  # Force MSA generation
                 ),
-                slurm_config=self.slurm_config,
+                slurm_config=msa_slurm_config,  # Use our config with correct partition/GPU
                 working_dir=str(shared_msa_dir.parent),  # Use 'in' directory as working dir
                 job_name="msa_generation"
             )
             
             # Generate MSA first
-            logger.info("Generating shared MSA...")
+            logger.info(f"Generating shared MSA using {msa_slurm_config.partition}/{msa_slurm_config.gpu_type}...")
             temp_job_manager._handle_msa()
             logger.info("MSA generation complete")
             
-            # Run controls first
+            # Run controls first to get the best PDB for FrustraPy analysis
+            logger.info(f"Submitting control prediction job to {self.slurm_config.partition}/{self.slurm_config.gpu_type}...")
+            control_job_id = None
             for control in self.controls:
+                # Update control's slurm_config to match parent's config
+                control.slurm_config = SlurmJobConfig(
+                    partition=self.slurm_config.partition,
+                    gpu_type=self.slurm_config.gpu_type,
+                    setup_path=self.slurm_config.setup_path,
+                    container_path=self.slurm_config.container_path,
+                    schema_path=self.slurm_config.schema_path
+                )
                 if not control.run():
                     return False
+                
+                # Get the job ID from the most recent submission
+                import subprocess
+                result = subprocess.run(['squeue', '--me', '--format=%i', '--noheader'], capture_output=True, text=True)
+                if result.returncode == 0:
+                    jobs = result.stdout.strip().split('\n')
+                    if jobs and jobs[0]:  # Check if we got any jobs
+                        control_job_id = jobs[0].strip()
+                        logger.info(f"Control job submitted with ID: {control_job_id}")
             
-            # Submit main experiment
-            config = self._create_config()
+            if not control_job_id:
+                logger.error("Failed to get control job ID")
+                return False
             
-            job_manager = SlurmJobManager(
-                experiment_config=config,
-                slurm_config=self.slurm_config,
-                working_dir=str(self.working_dir),
-                job_name=self.name
-            )
+            # Wait for control job to complete with 1-hour timeout
+            import time
+            max_wait = 3600  # 1 hour
+            wait_interval = 5  # Check every 30 seconds
+            waited = 0
             
-            success, failed_jobs = job_manager.run_experiment()
-            return success
+            while waited < max_wait:
+                # Check if job is still in queue
+                result = subprocess.run(['squeue', '--job', control_job_id, '--noheader'], capture_output=True, text=True)
+                if result.returncode == 0 and not result.stdout.strip():
+                    logger.info(f"Control job {control_job_id} completed")
+                    break
+                
+                logger.info(f"Waiting for control job {control_job_id} to complete... ({waited}s/{max_wait}s)")
+                time.sleep(wait_interval)
+                waited += wait_interval
+            
+            if waited >= max_wait:
+                logger.error(f"Control job {control_job_id} did not complete within {max_wait} seconds")
+                return False
+            
+            # Wait for the PDB file to appear
+            control_pdb = self.controls_dir / "vanilla" / "out" / "pdbs" / f"vanilla_{seq_hash}_best.pdb"
+            logger.info(f"Looking for PDB file at: {control_pdb}")
+            
+            # Additional wait for file to appear (5 minutes)
+            max_file_wait = 300  # 5 minutes
+            waited = 0
+            
+            while not control_pdb.exists() and waited < max_file_wait:
+                logger.info(f"Waiting for PDB file to be generated... ({waited}s/{max_file_wait}s)")
+                time.sleep(wait_interval)
+                waited += wait_interval
+            
+            if not control_pdb.exists():
+                raise ExperimentError(f"Control prediction failed - no best PDB found at {control_pdb} after waiting {max_file_wait}s")
+            
+            logger.info(f"Found control PDB at {control_pdb}")
+            
+            # Run FrustraPy analysis on the control PDB
+            positions = self._run_frustra_analysis(control_pdb)
+            
+            # Create mutation experiments for identified positions
+            self._create_mutation_experiments(positions)
+            
+            # Submit jobs for each mutation and condition
+            for mutation in self.mutations:
+                pos = mutation['position']
+                mutation_dir = mutation['directory']
+                
+                # Create and submit jobs for each condition
+                conditions = [
+                    Condition(mask=True, mutate=True),
+                    Condition(mask=True, mutate=False),
+                    Condition(mask=False, mutate=True),
+                    Condition(mask=False, mutate=False)
+                ]
+                
+                for condition in conditions:
+                    # Get condition name
+                    condition_name = f"{'masked' if condition.mask else 'unmasked'}_{'mutated' if condition.mutate else 'unmutated'}"
+                    condition_dir = mutation_dir / condition_name
+                    
+                    # Create experiment configuration
+                    config = self._create_config()
+                    config.parent_path = str(condition_dir)
+                    
+                    # Set pipeline type based on condition
+                    if condition.mask and condition.mutate:
+                        config.pipeline_type = "mutate_and_mask"
+                    elif condition.mask:
+                        config.pipeline_type = "masking"
+                    elif condition.mutate:
+                        config.pipeline_type = "mutate"
+                    else:
+                        config.pipeline_type = "default"
+                    
+                    # Set positions and cols for masking
+                    if condition.mask:
+                        config.positions = [pos]
+                        config.cols = [pos]
+                    
+                    # Initialize job manager for this condition
+                    condition_slurm_config = SlurmJobConfig(
+                        partition=self.slurm_config.partition,
+                        gpu_type=self.slurm_config.gpu_type,
+                        setup_path=self.slurm_config.setup_path,
+                        container_path=self.slurm_config.container_path,
+                        schema_path=self.slurm_config.schema_path
+                    )
+                    job_manager = SlurmJobManager(
+                        experiment_config=config,
+                        slurm_config=condition_slurm_config,  # Use our config with correct partition/GPU
+                        working_dir=str(condition_dir),
+                        job_name=f"frustra_pos_{pos}_{condition_name}"
+                    )
+                    
+                    # Submit the job
+                    success, failed_jobs = job_manager.run_experiment()
+                    if not success:
+                        logger.error(f"Failed to submit job for position {pos} condition {condition_name}")
+                        return False
+            
+            return True
             
         except Exception as e:
             logger.error(f"Failed to submit Frustra experiment: {str(e)}")
