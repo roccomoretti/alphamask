@@ -1077,12 +1077,12 @@ class FrustraExperiment(BaseExperiment):
             "num_recycles": self.defaults.get('num_recycles', 2),
             "num_seeds": self.defaults.get('num_seeds', 2),
             "setup_path": str(self.slurm_config.setup_path),
-            "pipeline_type": "masking",
+            "pipeline_type": "masking",  # Will be overridden based on condition
             "msa_method": "custom_a3m",  # Always use custom MSA
             "custom_a3m_path": str(shared_msa_path),  # Use shared MSA path
-            "masking_mode": "list",
-            "mask_msa": True,
-            "mask_deletion_matrix": True,
+            "masking_mode": "off",  # Default to off, will be set to "list" if masking
+            "mask_msa": False,  # Default to False, will be set to True if masking
+            "mask_deletion_matrix": False,  # Default to False, will be set to True if masking
             "mask_identity": "X",
             "positions": [],  # Will be set later for each condition
             "cols": []  # Will be set later for each condition
@@ -1246,6 +1246,15 @@ class FrustraExperiment(BaseExperiment):
                     if condition.mask:
                         config.positions = [pos]
                         config.cols = [pos]
+                        config.masking_mode = "list"
+                        config.mask_msa = True
+                        config.mask_deletion_matrix = True
+                    else:
+                        config.masking_mode = "off"
+                        config.mask_msa = False
+                        config.mask_deletion_matrix = False
+                        config.positions = []
+                        config.cols = []
                     
                     # Initialize job manager for this condition
                     condition_slurm_config = SlurmJobConfig(
