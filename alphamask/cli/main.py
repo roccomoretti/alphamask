@@ -224,11 +224,6 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         help="Base path for environments (default: ~/.conda)"
     )
-    env_group.add_argument(
-        "--env-setup-script",
-        type=str,
-        help="Path to environment setup script (e.g., ~/.bashrc)"
-    )
     
     # Predict command
     predict_parser = subparsers.add_parser(
