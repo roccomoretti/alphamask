@@ -2,14 +2,14 @@ proteins:
   her2:
     sequence: "RILKETELRKVKVLGSGAFGTVYKGIWIPDGENVKIPVAIKVLRENTSPKANKEILDEAYVMAGVGSPYVSRLLGICLTSTVQLVTQLMPYGCLLDHVRENRGRLGSQDLLNWCMQIAKGMSYLEDVRLVHRDLAARNVLVKSPNHVKITDFGLARLLDIDETEYHADGGKVPIKWMALESILRRRFTHQSDVWSYGVTVWELMTFGAKPYDGIPAREIPDLLEKGERLPQPPICTIDVYMIMVKCWMIDSECRPRFRELVSEFSRMARDPQRFVVIQNED"
     iterative_masking:
-      enabled: true
+      enabled: false
       mutations:
         - ["T150A"]
         - ["L157R"]
         - ["T150A", "L157R"]
       mask_token: "X"
     apriori_masking:
-      enabled: true
+      enabled: false
       experiments:
         - name: "Abdullah_et_al_2023_T150A"
           positions: [150]
@@ -59,7 +59,7 @@ proteins:
   rfah:
     sequence: "MQSWYLLYCKRGQLQRAQEHLERQAVNCLAPMITLEKIVRGKRTAVSEPLFPNYLFVEFDPEVIHTTTINATRGVSHFVRFGASPAIVPSAVIHQLSVYKPKDIVDPATPYPGDKVIITEGAFEGFQAIFTEPDGEARSMLLLNLINKEIKHSVKNTEFRKL"
     iterative_masking:
-      enabled: true
+      enabled: false
       mutations:
         - ["L142K"]
         - ["L142S"]
@@ -69,7 +69,7 @@ proteins:
         - ["L142S", "I146F"]
       mask_token: "X"
     apriori_masking:
-      enabled: true
+      enabled: false
       experiments:
         - name: "Freiberger_et_al_2023_L142K"
           positions: [142]
@@ -148,13 +148,13 @@ proteins:
   i89:
     sequence: "GSHMASMEDLQAEARAFLSEEMIAEFKAAFDMFDADGGGDISYKAVGTVFRMLGINPSKEVLDYLKEKIDVDGSGTIDFEEFLVLMVYIMKQDA"
     iterative_masking:
-      enabled: true
+      enabled: false
       mutations:
         - ["I89S"]
         - ["I89N"]
       mask_token: "X"
     apriori_masking:
-      enabled: false
+      enabled: true
       experiments:
         - name: "kortemme_et_al_I89S"
           positions: [89]

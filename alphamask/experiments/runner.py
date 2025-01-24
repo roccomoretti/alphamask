@@ -219,7 +219,7 @@ def run_experiments(
     
     Args:
         config_path: Path to configuration file
-        slurm_config: Optional SLURM configuration
+        slurm_config: Optional SLURM configuration with all job parameters
         base_dir: Optional base directory for experiments
         protein_ids: Optional list of specific proteins to run
         compression_config: Optional compression configuration
@@ -228,6 +228,10 @@ def run_experiments(
         bool: True if all experiments succeeded, False otherwise
     """
     try:
+        # Create default SLURM config if none provided
+        if slurm_config is None:
+            slurm_config = SlurmJobConfig()
+        
         runner = ExperimentRunner(
             config_path=config_path, 
             slurm_config=slurm_config, 
@@ -255,6 +259,7 @@ def run_experiments(
             success = True
             for protein_id, length in protein_lengths:
                 partition, gpu_type = partition_manager.get_partition_for_sequence(runner.config.proteins[protein_id].sequence)
+                # Update only partition and GPU type, preserve other SLURM settings
                 runner.slurm_config.partition = partition
                 runner.slurm_config.gpu_type = gpu_type
                 

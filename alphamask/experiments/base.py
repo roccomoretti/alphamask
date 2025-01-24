@@ -40,6 +40,7 @@ class BaseExperiment(ABC):
     ):
         self.name = name
         self.protein_config = protein_config
+        # Create default SLURM config if none provided, preserving all parameters
         self.slurm_config = slurm_config or SlurmJobConfig()
         self.working_dir = (working_dir or Path.cwd() / "experiments" / name).resolve()
         self.dry_run = dry_run
@@ -60,6 +61,18 @@ class BaseExperiment(ABC):
         
         # Configure experiment-specific logging
         self.debug = logging.getLogger().getEffectiveLevel() == logging.DEBUG
+        
+        # Log SLURM configuration details at debug level
+        if self.debug:
+            logger.debug(f"SLURM Configuration:")
+            logger.debug(f"  Partition: {self.slurm_config.partition}")
+            logger.debug(f"  GPU Type: {self.slurm_config.gpu_type}")
+            logger.debug(f"  Time Limit: {self.slurm_config.time}")
+            logger.debug(f"  Memory: {self.slurm_config.memory}")
+            logger.debug(f"  CPUs per Task: {self.slurm_config.cpus_per_task}")
+            logger.debug(f"  Bind Work: {self.slurm_config.bind_work}")
+            logger.debug(f"  AlphaMask Binary Path: {self.slurm_config.alphamask_bin_path}")
+            logger.debug(f"  AlphaMask Mount Path: {self.slurm_config.alphamask_mount_path}")
         
     @abstractmethod
     def validate(self) -> None:
@@ -380,8 +393,8 @@ class IterativeExperiment(BaseExperiment):
                     jobname_prefix="msa_generation",
                     parent_path=str(shared_msa_dir.parent),  # Use 'in' directory as parent
                     setup_path=str(self.slurm_config.setup_path),
-                    pipeline_type="default",
-                    msa_method="mmseqs2"  # Force MSA generation
+                    pipeline_type="default",  # Force MSA generation
+                    msa_method="mmseqs2"  # Use mmseqs2 for MSA generation
                 ),
                 slurm_config=self.slurm_config,
                 working_dir=str(shared_msa_dir.parent),  # Use 'in' directory as working dir
@@ -723,7 +736,7 @@ class AprioriExperiment(BaseExperiment):
             Tuple[ExperimentConfig, str]: The config object and job name
         """
         # Get shared MSA path
-        shared_msa_dir = self.working_dir.parent / "in" / "msa"
+        shared_msa_dir = self.working_dir / "in" / "msa"
         shared_msa_path = shared_msa_dir / "msa.a3m"
         
         # Create descriptive name for this condition

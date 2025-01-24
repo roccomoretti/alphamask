@@ -36,7 +36,18 @@ def run(args):
                 schema_path=args.schema,
                 partition=None if args.force_local else args.partitions[0],
                 gpu_type=None if args.force_local else args.gpu_types[0],
-                setup_commands=["conda activate alphamask"]
+                setup_commands=["conda activate alphamask"],
+                time=args.time,
+                memory=args.memory,
+                cpus_per_task=args.cpus_per_task,
+                bind_work=args.bind_work,
+                alphamask_bin_path=args.alphamask_bin_path,
+                alphamask_mount_path=args.alphamask_mount_path,
+                env_manager=args.env_manager,
+                env_module=None if args.env_module.lower() == 'none' else args.env_module,
+                env_name=args.env_name,
+                env_base_path=args.env_base_path,
+                env_setup_script=args.env_setup_script
             )
             
             # Initialize partition manager

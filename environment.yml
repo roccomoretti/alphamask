@@ -127,5 +127,6 @@ dependencies:
     - tqdm
     - scikit-learn
     - seaborn
+    - requests
 
 prefix: /home/iwe30/anaconda3/envs/alphamask
