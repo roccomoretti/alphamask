@@ -43,6 +43,15 @@ class SlurmJobConfig:
     schema_path: str = ""
     setup_path: Optional[str] = None
     setup_commands: List[str] = None
+    bind_work: bool = False  # Whether to bind /work:/work
+    alphamask_bin_path: str = "~/.conda/envs/alphamask/bin/alphamask"  # Path to alphamask binary
+    alphamask_mount_path: str = "$HOME/github/alphamask:/opt/alphamask"  # Mount path for alphamask
+    # Environment management parameters
+    env_manager: str = "conda"  # Options: conda, mamba, micromamba
+    env_module: Optional[str] = "Anaconda3"  # Module to load (if needed), None for no module
+    env_name: str = "alphamask"  # Environment name
+    env_base_path: Optional[str] = None  # Base path for environments, None for default
+    env_setup_script: Optional[str] = None  # Path to environment setup script (e.g., ~/.bashrc)
 
     def __post_init__(self):
         """Set default setup base path and validate GPU configuration"""
@@ -80,6 +89,8 @@ class SlurmJobConfig:
         elif self.partition == "paula":
             return f"gpu:a30:{self.gpu_count}"
         return f"gpu:{self.gpu_type}:{self.gpu_count}"
+
+
 
 class SlurmJob:
     def __init__(self, job_id: int, name: str, output_file: str, error_file: str):
@@ -514,133 +525,11 @@ class SlurmJobManager:
 #SBATCH --job-name={job_name}
 #SBATCH --output={str(log_dir_path / f"{job_name}.out")}
 #SBATCH --error={str(log_dir_path / f"{job_name}.err")}
-#SBATCH --time=02:00:00
-#SBATCH --mem=10000
-#SBATCH --cpus-per-task=1
+#SBATCH --time={self.slurm_config.time}
+#SBATCH --mem={self.slurm_config.memory}
+#SBATCH --cpus-per-task={self.slurm_config.cpus_per_task}
 #SBATCH --partition={self.slurm_config.partition}
 #SBATCH --gres=gpu:{self.slurm_config.gpu_type}:1
-
-# Load required modules and initialize conda
-module load Anaconda3
-eval "$(conda shell.bash hook)"
-source ~/.bashrc
-
-# Check if conda environment exists
-if ! conda env list | grep -q "alphamask"; then
-    echo "Error: conda environment 'alphamask' not found"
-    echo "Available environments:"
-    conda env list
-    exit 1
-fi
-
-# Environment setup
-{chr(10).join(self.slurm_config.setup_commands)}
-
-# Add conda environment to PATH
-CONDA_BASE=$(conda info --base)
-CONDA_ENV_PATH="/home/sc.uni-leipzig.de/$USER/.conda/envs/alphamask"
-export PATH="$CONDA_ENV_PATH/bin:$PATH"
-
-# Print environment info
-echo "Python path:"
-which python
-echo "Conda info:"
-conda info
-echo "PATH:"
-echo $PATH
-echo "Conda environment path:"
-echo $CONDA_ENV_PATH
-
-# Print paths for debugging
-echo "Working directory: {working_dir}"
-echo "Config path: {config_path}"
-echo "Schema path: {local_schema_path}"
-
-cd {working_dir}
-
-# Debug commands to verify paths and permissions
-echo "Listing working directory contents:"
-ls -la
-echo "Listing input directory contents:"
-ls -la in/ || echo "Input directory is empty"
-echo "Checking MSA file:"
-ls -la in/msa.a3m 2>/dev/null || echo "MSA file not found (this is normal if not using custom MSA)"
-echo "Checking parent directories:"
-ls -la ..
-echo "Current directory structure:"
-pwd
-find . -type f -name "msa.a3m" || echo "No MSA files found"
-
-# Verify paths exist
-if [ ! -f "{config_path}" ]; then
-    echo "Error: Config file not found at {config_path}"
-    exit 1
-fi
-
-if [ ! -f "{local_schema_path}" ]; then
-    echo "Error: Schema file not found at {local_schema_path}"
-    exit 1
-fi
-
-if [ ! -f "{container_path}" ]; then
-    echo "Error: Container not found at {container_path}"
-    exit 1
-fi
-
-# Function to wait for file to be fully written
-wait_for_file() {{
-    local file="$1"
-    local timeout=3600  # 1 hour timeout
-    local start_time=$(date +%s)
-    
-    while true; do
-        if [ -f "$file" ]; then
-            # Check if file size is stable (no writes for 5 seconds)
-            local size1=$(stat -c %s "$file")
-            sleep 5
-            local size2=$(stat -c %s "$file")
-            if [ "$size1" = "$size2" ]; then
-                return 0
-            fi
-        fi
-        
-        # Check timeout
-        local current_time=$(date +%s)
-        if [ $((current_time - start_time)) -gt $timeout ]; then
-            echo "Timeout waiting for $file to be fully written"
-            return 1
-        fi
-        
-        sleep 10
-    done
-}}
-
-# If this is a masking job and using custom MSA, wait for the MSA file
-if [ "{self.experiment_config.msa_method}" = "custom_a3m" ] && [ -n "{getattr(self.experiment_config, 'custom_a3m_path', '')}" ]; then
-    echo "Waiting for MSA file to be fully written: {getattr(self.experiment_config, 'custom_a3m_path', '')}"
-    if ! wait_for_file "{getattr(self.experiment_config, 'custom_a3m_path', '')}"; then
-        echo "Error: Failed to get MSA file"
-        exit 1
-    fi
-    echo "MSA file is ready"
-    
-    # Remove the in-progress flag if we're using a shared MSA
-    if [ -f "{getattr(self.experiment_config, 'custom_a3m_path', '')}" ]; then
-        flag_file="{Path(getattr(self.experiment_config, 'custom_a3m_path', '')).parent / '.msa_in_progress'}"
-        if [ -f "$flag_file" ]; then
-            rm -f "$flag_file"
-            echo "Removed MSA in-progress flag"
-        fi
-    fi
-fi
-
-# Check if conda environment exists before binding
-if [ ! -d "$CONDA_ENV_PATH" ]; then
-    echo "Error: Conda environment directory not found at $CONDA_ENV_PATH"
-    echo "Current conda environments:"
-    conda env list
-    exit 1
-fi
 
 # Run the command using singularity
 echo "Running command: {self.slurm_config.script_path} --config {config_path} --schema {local_schema_path} --pipeline {pipeline_type}"
@@ -648,15 +537,19 @@ echo "Running command: {self.slurm_config.script_path} --config {config_path} --
 # Export the conda environment path inside the container
 echo "Using container's built-in environment..."
 
-singularity exec --nv \\
-    -B /work:/work \\
-    -B {working_dir}:{working_dir} \\
-    -B /home/sc.uni-leipzig.de/$USER/github/alphamask:/opt/alphamask \\
-    {container_path} \\
-    ~/.conda/envs/alphamask/bin/alphamask predict-job \\
-    --config {config_path} \\
-    --schema {local_schema_path} \\
-    --pipeline {pipeline_type}
+# Build singularity command with optional bindings
+singularity_cmd="singularity exec --nv"
+{f'singularity_cmd+=" -B {self.slurm_config.alphamask_mount_path}"' if self.slurm_config.alphamask_mount_path else ''}
+{f'singularity_cmd+=" -B /work:/work"' if self.slurm_config.bind_work else ''}
+singularity_cmd+=" -B {working_dir}:{working_dir}"
+singularity_cmd+=" {container_path}"
+singularity_cmd+=" {self.slurm_config.alphamask_bin_path} predict-job"
+singularity_cmd+=" --config {config_path}"
+singularity_cmd+=" --schema {local_schema_path}"
+singularity_cmd+=" --pipeline {pipeline_type}"
+
+# Execute the command
+eval "$singularity_cmd"
 """
 
     def submit_job(
