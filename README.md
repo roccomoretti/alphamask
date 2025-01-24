@@ -167,7 +167,6 @@ alphamask run \
 
 # Environment configuration options
     --env-manager micromamba \  # Options: conda, mamba, micromamba
-    --env-module none \         # Module to load (if needed)
     --env-name alphamask \      # Environment name
     --env-base-path ~/.micromamba  # Base path for environments
 
