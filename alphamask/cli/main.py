@@ -214,12 +214,6 @@ def create_parser() -> argparse.ArgumentParser:
         help="Package manager to use (conda, mamba, micromamba)"
     )
     env_group.add_argument(
-        "--env-module",
-        type=str,
-        default="Anaconda3",
-        help="Module to load (if needed), use 'none' for no module"
-    )
-    env_group.add_argument(
         "--env-name",
         type=str,
         default="alphamask",

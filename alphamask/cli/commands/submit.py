@@ -44,7 +44,6 @@ def run(args):
                 alphamask_bin_path=args.alphamask_bin_path,
                 alphamask_mount_path=args.alphamask_mount_path,
                 env_manager=args.env_manager,
-                env_module=None if args.env_module.lower() == 'none' else args.env_module,
                 env_name=args.env_name,
                 env_base_path=args.env_base_path,
                 env_setup_script=args.env_setup_script
@@ -54,7 +53,7 @@ def run(args):
             partition_manager = PartitionManager()
             
             # Get base directory
-            base_dir = Path(args.path) if hasattr(args, 'path') else Path("/work/nw99ixuq-alphamask/my_experiments")
+            base_dir = Path(args.path) if hasattr(args, 'path') else Path("~/alphamask_experiments/test_experiment")
             
             # Run experiments
             success = run_experiments(
