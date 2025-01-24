@@ -45,9 +45,8 @@ def run(args):
                 alphamask_mount_path=args.alphamask_mount_path,
                 env_manager=args.env_manager,
                 env_name=args.env_name,
-                env_base_path=args.env_base_path,
-                env_setup_script=args.env_setup_script
-            )
+                env_base_path=args.env_base_path
+                )
             
             # Initialize partition manager
             partition_manager = PartitionManager()
