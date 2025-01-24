@@ -90,64 +90,7 @@ class SlurmJobConfig:
             return f"gpu:a30:{self.gpu_count}"
         return f"gpu:{self.gpu_type}:{self.gpu_count}"
 
-    def get_env_setup_commands(self) -> str:
-        """Generate environment setup commands based on configuration"""
-        commands = []
-        
-        # Load environment module if specified
-        if self.env_module:
-            commands.append(f"module load {self.env_module}")
-        
-        # Initialize environment manager
-        if self.env_manager == "conda":
-            commands.append('eval "$(conda shell.bash hook)"')
-        elif self.env_manager == "mamba":
-            commands.append('eval "$(mamba shell.bash hook)"')
-        elif self.env_manager == "micromamba":
-            commands.append('eval "$(micromamba shell hook --shell=bash)"')
-        
-        # Source setup script if provided
-        if self.env_setup_script:
-            commands.append(f"source {self.env_setup_script}")
-        elif Path("~/.bashrc").expanduser().exists():
-            commands.append("source ~/.bashrc")
-        
-        # Get environment path
-        env_path_cmd = {
-            "conda": "conda info --base",
-            "mamba": "mamba info --base",
-            "micromamba": "micromamba info --base"
-        }.get(self.env_manager, "conda info --base")
-        
-        # Build environment setup
-        env_setup = f"""
-# Environment setup
-{chr(10).join(commands)}
 
-# Check if environment exists
-if ! {self.env_manager} env list | grep -q "{self.env_name}"; then
-    echo "Error: {self.env_manager} environment '{self.env_name}' not found"
-    echo "Available environments:"
-    {self.env_manager} env list
-    exit 1
-fi
-
-# Add environment to PATH
-ENV_BASE=$({env_path_cmd})
-ENV_PATH="{self.env_base_path or '~/.conda'}/envs/{self.env_name}"
-export PATH="$ENV_PATH/bin:$PATH"
-
-# Print environment info
-echo "Python path:"
-which python
-echo "Environment info:"
-{self.env_manager} info
-echo "PATH:"
-echo $PATH
-echo "Environment path:"
-echo $ENV_PATH
-"""
-        return env_setup
 
 class SlurmJob:
     def __init__(self, job_id: int, name: str, output_file: str, error_file: str):

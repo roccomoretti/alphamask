@@ -148,17 +148,37 @@ python -m alphamask setup --path /path/to/workspace/my_experiments
 ### 6. Running Experiments
 
 ```bash
-# Basic experiment run
-python -m alphamask run \
+# Basic experiment run with all options
+alphamask run \
+    --path /path/to/workspace/my_experiments \
     --container /path/to/container/vsc-frustra_masking.sif \
-    --script /path/to/alphamask/predict.py \
     --schema /path/to/workspace/my_experiments/schema/schema_validation.json \
-    --config /path/to/workspace/my_experiments/config/test.yaml \
-    --partition YOUR_GPU_PARTITION \
-    --gpu-type YOUR_GPU_TYPE
+    --config /path/to/workspace/my_experiments/config/proteins.yaml \
+    --partitions YOUR_GPU_PARTITION \
+    --gpu-types YOUR_GPU_TYPE \
+    --time "04:00:00" \
+    --memory "20000" \
+    --cpus-per-task 1 \
+    --alphamask-bin-path ~/.micromamba/envs/alphamask/bin/alphamask \
+    --alphamask-mount-path /path/to/alphamask:/opt/alphamask \
+    --compress both \
+    --compression-level 9 \
+    --debug
+
+# Environment configuration options
+    --env-manager micromamba \  # Options: conda, mamba, micromamba
+    --env-module none \         # Module to load (if needed)
+    --env-name alphamask \      # Environment name
+    --env-base-path ~/.micromamba  # Base path for environments
 
 # Check available partitions and GPU types on your cluster
 sinfo -o "%10P %10G %10O %10l %10c"  # For SLURM-based clusters
+
+# Monitor job status
+alphamask status \
+    --path /path/to/workspace/my_experiments \
+    --config /path/to/workspace/my_experiments/config/proteins.yaml \
+    --refresh 30  # Updates every 30 seconds
 ```
 
 ### 7. Extracting Results
