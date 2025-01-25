@@ -5,7 +5,7 @@ import subprocess
 import shutil
 from pathlib import Path
 from typing import Dict, List, Union, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import logging
 from datetime import datetime
@@ -46,6 +46,9 @@ class SlurmJobConfig:
     bind_work: bool = False  # Whether to bind /work:/work
     alphamask_bin_path: str = "~/.conda/envs/alphamask/bin/alphamask"  # Path to alphamask binary
     alphamask_mount_path: str = "$HOME/github/alphamask:/opt/alphamask"  # Mount path for alphamask
+    alphamask_pythonpath: str = "/opt/alphamask"  # Default Python path for alphamask in container
+    additional_env_vars: Dict[str, str] = field(default_factory=dict)  # Allow additional environment variables
+    preserve_env: bool = True  # Whether to preserve existing environment variables
     # Environment management parameters
     env_manager: str = "conda"  # Options: conda, mamba, micromamba
     env_module: Optional[str] = "Anaconda3"  # Module to load (if needed), None for no module
@@ -60,6 +63,13 @@ class SlurmJobConfig:
         
         if self.setup_commands is None:
             self.setup_commands = []
+        
+        # Initialize additional_env_vars if None
+        if self.additional_env_vars is None:
+            self.additional_env_vars = {}
+        
+        # Ensure alphamask_pythonpath is absolute
+        self.alphamask_pythonpath = os.path.abspath(os.path.expanduser(self.alphamask_pythonpath))
         
         # Validate GPU configuration based on partition
         if self.partition == "clara":
@@ -510,10 +520,13 @@ class SlurmJobManager:
 
     def _get_script_content(self, job_name: str, working_dir: str, config_path: str, 
                            local_schema_path: str, container_path: str, log_dir: Optional[str] = None) -> str:
-        """Generate the content of the SLURM script"""
+        """Generate the content of the SLURM script with enhanced environment handling"""
         # Use provided log_dir or default to self.log_dir
         log_dir_path = Path(log_dir) if log_dir else self.log_dir
         log_dir_path.mkdir(parents=True, exist_ok=True)
+        
+        # Get environment settings
+        env_settings = self._prepare_environment_settings()
         
         # Read pipeline type from config file
         with open(config_path, 'r') as f:
@@ -521,6 +534,7 @@ class SlurmJobManager:
             pipeline_type = config_data.get('pipeline_type', 'default')
             logger.debug(f"Using pipeline type from config: {pipeline_type}")
         
+        # Create script content
         return f"""#!/bin/bash
 #SBATCH --job-name={job_name}
 #SBATCH --output={str(log_dir_path / f"{job_name}.out")}
@@ -531,22 +545,30 @@ class SlurmJobManager:
 #SBATCH --partition={self.slurm_config.partition}
 #SBATCH --gres=gpu:{self.slurm_config.gpu_type}:1
 
-# Run the command using singularity
-echo "Running command: {self.slurm_config.script_path} --config {config_path} --schema {local_schema_path} --pipeline {pipeline_type}"
+# Log the environment for debugging
+echo "Current environment:"
+env | sort
 
-# Export the conda environment path inside the container
-echo "Using container's built-in environment..."
-
-# Build singularity command with optional bindings
+# Build singularity command with environment settings
 singularity_cmd="singularity exec --nv"
+
+# Add environment settings
+{env_settings}
+
+# Add bindings
 {f'singularity_cmd+=" -B {self.slurm_config.alphamask_mount_path}"' if self.slurm_config.alphamask_mount_path else ''}
 {f'singularity_cmd+=" -B /work:/work"' if self.slurm_config.bind_work else ''}
 singularity_cmd+=" -B {working_dir}:{working_dir}"
 singularity_cmd+=" {container_path}"
+
+# Add command and arguments
 singularity_cmd+=" {self.slurm_config.alphamask_bin_path} predict-job"
 singularity_cmd+=" --config {config_path}"
 singularity_cmd+=" --schema {local_schema_path}"
 singularity_cmd+=" --pipeline {pipeline_type}"
+
+# Log the final command
+echo "Executing command: $singularity_cmd"
 
 # Execute the command
 eval "$singularity_cmd"
@@ -559,8 +581,11 @@ eval "$singularity_cmd"
         script_dir: Optional[str] = None,
         log_dir: Optional[str] = None
     ) -> Optional[int]:
-        """Submit a job either to SLURM or run it directly"""
+        """Submit a job with enhanced environment handling"""
         try:
+            # Validate environment configuration
+            self._validate_environment_config()
+            
             # Log input parameters
             logger.debug(f"Submitting job with config_path: {config_path}, job_name: {job_name}")
             logger.debug(f"Working directory: {self.working_dir}")
@@ -1088,3 +1113,39 @@ eval "$singularity_cmd"
         except Exception as e:
             logger.error(f"Error getting job info: {str(e)}")
             return {}
+
+    def _prepare_environment_settings(self) -> str:
+        """Prepare environment variable settings for the singularity command.
+        
+        Returns:
+            str: Formatted string of environment variable settings for singularity
+        """
+        env_settings = []
+        
+        # Add PYTHONPATH setting
+        env_settings.append(f"singularity_cmd+=\" --env PYTHONPATH={self.slurm_config.alphamask_pythonpath}\"")
+        
+        # Add any additional environment variables
+        for key, value in self.slurm_config.additional_env_vars.items():
+            env_settings.append(f"singularity_cmd+=\" --env {key}={value}\"")
+        
+        # Add environment preservation if requested
+        if self.slurm_config.preserve_env:
+            env_settings.append("singularity_cmd+=\" --env-file /dev/null\"")  # Preserve all environment variables
+            
+        return "\n".join(env_settings)
+
+    def _validate_environment_config(self) -> None:
+        """Validate environment configuration before job submission"""
+        # Check if alphamask mount path exists
+        if self.slurm_config.alphamask_mount_path:
+            source_path = self.slurm_config.alphamask_mount_path.split(':')[0]
+            source_path = os.path.expanduser(source_path)
+            source_path = os.path.expandvars(source_path)
+            if not os.path.exists(source_path):
+                logger.warning(f"Alphamask source path does not exist: {source_path}")
+        
+        # Check if PYTHONPATH contains required directories
+        pythonpath = os.environ.get('PYTHONPATH', '')
+        if self.slurm_config.alphamask_pythonpath not in pythonpath.split(':'):
+            logger.debug(f"Adding {self.slurm_config.alphamask_pythonpath} to PYTHONPATH")
