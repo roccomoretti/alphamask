@@ -535,8 +535,8 @@ class SlurmJobManager:
         env_path = os.path.abspath(os.path.expanduser(env_path))
         logger.debug(f"Using environment path: {env_path}")
         
-        # Get experiment root directory (two levels up from working_dir)
-        experiment_root = str(Path(working_dir).parents[1])
+        # Get experiment root directory (three levels up from working_dir to get to i89_897a1)
+        experiment_root = str(Path(working_dir).parents[2])
         logger.debug(f"Using experiment root directory: {experiment_root}")
         
         # Get environment settings
