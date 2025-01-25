@@ -535,6 +535,10 @@ class SlurmJobManager:
         env_path = os.path.abspath(os.path.expanduser(env_path))
         logger.debug(f"Using environment path: {env_path}")
         
+        # Get experiment root directory (two levels up from working_dir)
+        experiment_root = str(Path(working_dir).parents[1])
+        logger.debug(f"Using experiment root directory: {experiment_root}")
+        
         # Get environment settings
         env_settings = self._prepare_environment_settings()
         
@@ -564,6 +568,7 @@ echo "Environment path: {env_path}"
 echo "Working directory: {working_dir}"
 echo "Container path: {container_path}"
 echo "Alphamask binary: {self.slurm_config.alphamask_bin_path}"
+echo "Experiment root: {experiment_root}"
 
 # Build singularity command with environment settings
 singularity_cmd="singularity exec --nv"
@@ -576,6 +581,7 @@ singularity_cmd="singularity exec --nv"
 singularity_cmd+=" -B {env_path}:{env_path}"  # Bind environment directory
 {f'singularity_cmd+=" -B /work:/work"' if self.slurm_config.bind_work else ''}
 singularity_cmd+=" -B {working_dir}:{working_dir}"
+singularity_cmd+=" -B {experiment_root}:{experiment_root}"  # Bind experiment root directory
 singularity_cmd+=" {container_path}"
 
 # Add command and arguments
