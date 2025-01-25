@@ -57,7 +57,7 @@ class SlurmJobConfig:
     env_setup_script: Optional[str] = None  # Path to environment setup script (e.g., ~/.bashrc)
 
     def __post_init__(self):
-        """Set default setup base path and validate GPU configuration"""
+        """Set default setup base path and validate configuration"""
         if self.setup_path is None:
             self.setup_path = os.path.expanduser("~/alphamask_setup")
         
@@ -67,6 +67,11 @@ class SlurmJobConfig:
         # Initialize additional_env_vars if None
         if self.additional_env_vars is None:
             self.additional_env_vars = {}
+        
+        # Validate and expand paths
+        self.alphamask_bin_path = os.path.abspath(os.path.expanduser(os.path.expandvars(self.alphamask_bin_path)))
+        if not os.path.exists(self.alphamask_bin_path):
+            logger.warning(f"Alphamask binary not found at: {self.alphamask_bin_path}")
         
         # Ensure alphamask_pythonpath is absolute
         self.alphamask_pythonpath = os.path.abspath(os.path.expanduser(self.alphamask_pythonpath))
@@ -525,6 +530,11 @@ class SlurmJobManager:
         log_dir_path = Path(log_dir) if log_dir else self.log_dir
         log_dir_path.mkdir(parents=True, exist_ok=True)
         
+        # Determine the environment path
+        env_path = os.path.dirname(os.path.dirname(self.slurm_config.alphamask_bin_path))
+        env_path = os.path.abspath(os.path.expanduser(env_path))
+        logger.debug(f"Using environment path: {env_path}")
+        
         # Get environment settings
         env_settings = self._prepare_environment_settings()
         
@@ -549,6 +559,12 @@ class SlurmJobManager:
 echo "Current environment:"
 env | sort
 
+# Log paths for debugging
+echo "Environment path: {env_path}"
+echo "Working directory: {working_dir}"
+echo "Container path: {container_path}"
+echo "Alphamask binary: {self.slurm_config.alphamask_bin_path}"
+
 # Build singularity command with environment settings
 singularity_cmd="singularity exec --nv"
 
@@ -557,6 +573,7 @@ singularity_cmd="singularity exec --nv"
 
 # Add bindings
 {f'singularity_cmd+=" -B {self.slurm_config.alphamask_mount_path}"' if self.slurm_config.alphamask_mount_path else ''}
+singularity_cmd+=" -B {env_path}:{env_path}"  # Bind environment directory
 {f'singularity_cmd+=" -B /work:/work"' if self.slurm_config.bind_work else ''}
 singularity_cmd+=" -B {working_dir}:{working_dir}"
 singularity_cmd+=" {container_path}"
@@ -581,14 +598,16 @@ eval "$singularity_cmd"
         script_dir: Optional[str] = None,
         log_dir: Optional[str] = None
     ) -> Optional[int]:
-        """Submit a job with enhanced environment handling"""
+        """Submit a job with enhanced environment handling and validation"""
         try:
-            # Validate environment configuration
+            # Validate environment configuration and executables
             self._validate_environment_config()
+            self._validate_executables()
             
             # Log input parameters
             logger.debug(f"Submitting job with config_path: {config_path}, job_name: {job_name}")
             logger.debug(f"Working directory: {self.working_dir}")
+            logger.debug(f"Environment path: {os.path.dirname(os.path.dirname(self.slurm_config.alphamask_bin_path))}")
             
             # Use the config path that was passed in
             config_path = Path(config_path)
@@ -1149,3 +1168,20 @@ eval "$singularity_cmd"
         pythonpath = os.environ.get('PYTHONPATH', '')
         if self.slurm_config.alphamask_pythonpath not in pythonpath.split(':'):
             logger.debug(f"Adding {self.slurm_config.alphamask_pythonpath} to PYTHONPATH")
+
+    def _validate_executables(self) -> None:
+        """Validate that required executables exist and have proper permissions"""
+        # Check alphamask binary
+        alphamask_path = os.path.expanduser(self.slurm_config.alphamask_bin_path)
+        if not os.path.exists(alphamask_path):
+            raise FileNotFoundError(f"Alphamask binary not found: {alphamask_path}")
+        
+        # Verify execute permissions
+        if not os.access(alphamask_path, os.X_OK):
+            logger.warning(f"Alphamask binary may not be executable: {alphamask_path}")
+            try:
+                # Try to make it executable
+                os.chmod(alphamask_path, 0o755)
+                logger.info(f"Made alphamask binary executable: {alphamask_path}")
+            except Exception as e:
+                logger.warning(f"Could not set execute permission on alphamask binary: {e}")
