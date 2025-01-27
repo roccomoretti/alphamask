@@ -126,3 +126,39 @@ alphamask extract-pdbs --config config.yaml \
 alphamask extract-pdbs --config config.yaml \
     --proteins protein1 protein2 \
     --best-only
+
+
+# Extract for specific proteins
+alphamask extract-pdbs --config config.yaml \
+    --proteins protein1 protein2 \
+    --best-only
+
+# Analyze RMSD distributions
+## Basic analysis
+alphamask analyze --config config.yaml --path /work/experiments
+
+## Analyze specific proteins with parallel processing
+alphamask analyze \
+    --config config.yaml \
+    --path /work/experiments \
+    --proteins her2 rfah \
+    --parallel 4
+
+## Incremental analysis (only analyze new results)
+alphamask analyze \
+    --config config.yaml \
+    --path /work/experiments \
+    --incremental
+
+## Force reanalysis and specify plot format
+alphamask analyze \
+    --config config.yaml \
+    --path /work/experiments \
+    --force \
+    --format pdf
+
+## Skip plot generation
+alphamask analyze \
+    --config config.yaml \
+    --path /work/experiments \
+    --no-plots

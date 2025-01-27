@@ -148,7 +148,7 @@ proteins:
   i89:
     sequence: "GSHMASMEDLQAEARAFLSEEMIAEFKAAFDMFDADGGGDISYKAVGTVFRMLGINPSKEVLDYLKEKIDVDGSGTIDFEEFLVLMVYIMKQDA"
     iterative_masking:
-      enabled: true
+      enabled: false
       mutations:
         - ["D72D", "I89S"]
         - ["D72D", "S74S", "I89S"]
@@ -164,7 +164,7 @@ proteins:
       experiments:
         - name: "kortemme_et_al_progressive_I89N_plus1"
           positions: [72, 89]
-          mutations: ["D72D", "I89N"]
+          mutations: ["I89N"]
           conditions:
             - {mask: false, mutate: false}
             - {mask: true, mutate: false}
@@ -172,7 +172,7 @@ proteins:
             - {mask: true, mutate: true}
         - name: "kortemme_et_al_progressive_I89N_plus2"
           positions: [72, 74, 89]
-          mutations: ["D72D", "S74S", "I89N"]
+          mutations: ["I89N"]
           conditions:
             - {mask: false, mutate: false}
             - {mask: true, mutate: false}
@@ -180,7 +180,7 @@ proteins:
             - {mask: true, mutate: true}
         - name: "kortemme_et_al_progressive_I89N_plus3"
           positions: [72, 74, 76, 89]
-          mutations: ["D72D", "S74S", "T76T", "I89N"]
+          mutations: [I89N"]
           conditions:
             - {mask: false, mutate: false}
             - {mask: true, mutate: false}
@@ -188,7 +188,7 @@ proteins:
             - {mask: true, mutate: true}
         - name: "kortemme_et_al_progressive_I89N_plus4"
           positions: [72, 74, 76, 81, 89]
-          mutations: ["D72D", "S74S", "T76T", "E81E", "I89N"]
+          mutations: ["I89N"]
           conditions:
             - {mask: false, mutate: false}
             - {mask: true, mutate: false}
@@ -196,7 +196,7 @@ proteins:
             - {mask: true, mutate: true}
         - name: "kortemme_et_al_progressive_I89S_plus1"
           positions: [72, 89]
-          mutations: ["D72D", "I89S"]
+          mutations: ["I89S"]
           conditions:
             - {mask: false, mutate: false}
             - {mask: true, mutate: false}
@@ -204,7 +204,7 @@ proteins:
             - {mask: true, mutate: true}
         - name: "kortemme_et_al_progressive_I89S_plus2"
           positions: [72, 74, 89]
-          mutations: ["D72D", "S74S", "I89S"]
+          mutations: ["I89S"]
           conditions:
             - {mask: false, mutate: false}
             - {mask: true, mutate: false}
@@ -212,7 +212,7 @@ proteins:
             - {mask: true, mutate: true}
         - name: "kortemme_et_al_progressive_I89S_plus3"
           positions: [72, 74, 76, 89]
-          mutations: ["D72D", "S74S", "T76T", "I89S"]
+          mutations: ["I89S"]
           conditions:
             - {mask: false, mutate: false}
             - {mask: true, mutate: false}
@@ -220,7 +220,7 @@ proteins:
             - {mask: true, mutate: true}
         - name: "kortemme_et_al_progressive_I89S_plus4"
           positions: [72, 74, 76, 81, 89]
-          mutations: ["D72D", "S74S", "T76T", "E81E", "I89S"]
+          mutations: ["I89S"]
           conditions:
             - {mask: false, mutate: false}
             - {mask: true, mutate: false}
