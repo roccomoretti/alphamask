@@ -153,6 +153,41 @@ def create_parser() -> argparse.ArgumentParser:
         help="Force local execution"
     )
     run_parser.add_argument(
+        "--time",
+        type=str,
+        default="02:00:00",
+        help="Wall time limit for SLURM jobs (HH:MM:SS)"
+    )
+    run_parser.add_argument(
+        "--memory",
+        type=str,
+        default="10000",
+        help="Memory limit for SLURM jobs (MB)"
+    )
+    run_parser.add_argument(
+        "--cpus-per-task",
+        type=int,
+        default=1,
+        help="Number of CPUs per task"
+    )
+    run_parser.add_argument(
+        "--bind-work",
+        action="store_true",
+        help="Bind /work:/work in Singularity container"
+    )
+    run_parser.add_argument(
+        "--alphamask-bin-path",
+        type=str,
+        default="~/.conda/envs/alphamask/bin/alphamask",
+        help="Path to alphamask binary"
+    )
+    run_parser.add_argument(
+        "--alphamask-mount-path",
+        type=str,
+        default="$HOME/github/alphamask:/opt/alphamask",
+        help="Mount path for alphamask in container"
+    )
+    run_parser.add_argument(
         "--compress",
         choices=["h5", "npz", "both"],
         default="both",
@@ -168,6 +203,26 @@ def create_parser() -> argparse.ArgumentParser:
         "--store-uncompressed",
         action="store_true",
         help="Store uncompressed PDBs alongside compressed data"
+    )
+    
+    # Add environment management options
+    env_group = run_parser.add_argument_group('Environment Management')
+    env_group.add_argument(
+        "--env-manager",
+        choices=["conda", "mamba", "micromamba"],
+        default="conda",
+        help="Package manager to use (conda, mamba, micromamba)"
+    )
+    env_group.add_argument(
+        "--env-name",
+        type=str,
+        default="alphamask",
+        help="Environment name"
+    )
+    env_group.add_argument(
+        "--env-base-path",
+        type=str,
+        help="Base path for environments (default: ~/.conda)"
     )
     
     # Predict command

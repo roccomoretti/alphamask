@@ -92,24 +92,97 @@ graph TD
 
 ## Installation
 
+### 1. Environment Setup
 
-# Remove existing experiment folder
-rm -rf /work/YOUR_USERNAME_WORKSPACE_FOLDER/my_experiments/ 
+First, ensure you're on a compute node with GPU access:
+```bash
+# Request an interactive GPU session (adjust parameters according to your cluster)
+srun --job-name "alphamask_setup" \
+     --gres=gpu:1 \  # Specify GPU requirements for your cluster
+     --time 24:00:00 \
+     --partition=YOUR_GPU_PARTITION \  # e.g., gpus, gpu, accelerated, etc.
+     --pty bash
+```
+
+### 2. Load Required Modules
+```bash
+# Load CUDA module (version may vary by cluster)
+module load cuda  # e.g., cuda/12.6, cuda/11.8, etc.
+
+# Load any additional required modules
+module load gcc   # If needed
+module load python  # If needed
+```
+
+### 3. Create Conda Environment
+```bash
+# Using micromamba (recommended)
+micromamba create -f environment.yml
+
+# Or using conda
+conda env create -f environment.yml
+
+# Activate the environment
+micromamba activate alphamask  # or conda activate alphamask
+```
+
+### 4. Verify Installation
+```bash
+# Check CUDA availability
+python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
+
+# Check GPU visibility
+nvidia-smi
+```
+
+### 5. Setup Experiment Directory
+
+```bash
+# Remove existing experiment folder if needed
+rm -rf /path/to/workspace/my_experiments/ 
 
 # Setup experiment folder
-python -m alphamask setup --path /work/YOUR_USERNAME_WORKSPACE_FOLDER/my_experiments 
+python -m alphamask setup --path /path/to/workspace/my_experiments 
+```
 
-# Run experiment
-python -m alphamask run --container ~/containers/vsc-frustra_masking.sif \
---script /home/sc.uni-leipzig.de/YOUR_USERNAME_WORKSPACE_FOLDER/github/alphamask/predict.py \
---schema /work/YOUR_USERNAME_WORKSPACE_FOLDER/my_experiments/schema/schema_validation.json \
---config /work/YOUR_USERNAME_WORKSPACE_FOLDER/my_experiments/config/test.yaml \
---partition paula --gpu-type a30
+### 6. Running Experiments
 
-# Make sure you select the correct partition and gpu type
-# You can find the available partitions and gpu types with the following command:
-sinfo -o "%10P %10G %10O %10l %10c"
+```bash
+# Basic experiment run with all options
+alphamask run \
+    --path /path/to/workspace/my_experiments \
+    --container /path/to/container/vsc-frustra_masking.sif \
+    --schema /path/to/workspace/my_experiments/schema/schema_validation.json \
+    --config /path/to/workspace/my_experiments/config/proteins.yaml \
+    --partitions YOUR_GPU_PARTITION \
+    --gpu-types YOUR_GPU_TYPE \
+    --time "04:00:00" \
+    --memory "20000" \
+    --cpus-per-task 1 \
+    --alphamask-bin-path ~/.micromamba/envs/alphamask/bin/alphamask \
+    --alphamask-mount-path /path/to/alphamask:/opt/alphamask \
+    --compress both \
+    --compression-level 9 \
+    --debug
 
+# Environment configuration options
+    --env-manager micromamba \  # Options: conda, mamba, micromamba
+    --env-name alphamask \      # Environment name
+    --env-base-path ~/.micromamba  # Base path for environments
+
+# Check available partitions and GPU types on your cluster
+sinfo -o "%10P %10G %10O %10l %10c"  # For SLURM-based clusters
+
+# Monitor job status
+alphamask status \
+    --path /path/to/workspace/my_experiments \
+    --config /path/to/workspace/my_experiments/config/proteins.yaml \
+    --refresh 30  # Updates every 30 seconds
+```
+
+### 7. Extracting Results
+
+```bash
 # Extract all PDBs
 alphamask extract-pdbs --config config.yaml
 
@@ -126,39 +199,21 @@ alphamask extract-pdbs --config config.yaml \
 alphamask extract-pdbs --config config.yaml \
     --proteins protein1 protein2 \
     --best-only
+```
 
+### Common Cluster-Specific Adjustments
 
-# Extract for specific proteins
-alphamask extract-pdbs --config config.yaml \
-    --proteins protein1 protein2 \
-    --best-only
+1. **GPU Selection**: Different clusters use different GPU naming conventions:
+   - Some use specific models (e.g., `a100`, `v100`, `quadro_rtx_8000`)
+   - Others use generic names (e.g., `gpu:1`, `gpu:k80:1`)
 
-# Analyze RMSD distributions
-## Basic analysis
-alphamask analyze --config config.yaml --path /work/experiments
+2. **Partition Names**: Common variations include:
+   - `gpu`, `gpus`, `accelerated`
+   - `cuda`, `tesla`, `nvidia`
+   - Check your cluster documentation for specific names
 
-## Analyze specific proteins with parallel processing
-alphamask analyze \
-    --config config.yaml \
-    --path /work/experiments \
-    --proteins her2 rfah \
-    --parallel 4
+3. **Module Names**: Module naming conventions vary:
+   - CUDA: `cuda/12.6`, `cuda/11.8`, `nvidia/cuda-12.6`
+   - Python: `python/3.10`, `python3`, `anaconda3`
 
-## Incremental analysis (only analyze new results)
-alphamask analyze \
-    --config config.yaml \
-    --path /work/experiments \
-    --incremental
-
-## Force reanalysis and specify plot format
-alphamask analyze \
-    --config config.yaml \
-    --path /work/experiments \
-    --force \
-    --format pdf
-
-## Skip plot generation
-alphamask analyze \
-    --config config.yaml \
-    --path /work/experiments \
-    --no-plots
+Always consult your cluster's documentation or system administrators for specific configuration details.

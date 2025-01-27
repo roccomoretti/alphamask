@@ -148,7 +148,7 @@ proteins:
   i89:
     sequence: "GSHMASMEDLQAEARAFLSEEMIAEFKAAFDMFDADGGGDISYKAVGTVFRMLGINPSKEVLDYLKEKIDVDGSGTIDFEEFLVLMVYIMKQDA"
     iterative_masking:
-      enabled: true
+      enabled: false
       mutations:
         - ["D72D", "I89S"]
         - ["D72D", "S74S", "I89S"]
