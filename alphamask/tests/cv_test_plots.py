@@ -1,35 +1,14 @@
-"""Test script for collective variables calculation."""
-import sys
-from pathlib import Path
+"""Plotting functions for collective variables analysis."""
+from typing import List, Dict
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import List, Dict
 import matplotlib.gridspec as gridspec
 from scipy.stats import gaussian_kde
 import matplotlib.colors as mcolors
 from matplotlib.colors import LogNorm
 import re
-import h5py
-from tqdm import tqdm
-
-# Add parent directory to path to import alphamask
-sys.path.append(str(Path(__file__).parent.parent))
-
-#####################
-# Use JAX for speed #
-#####################
-import jax
-import jax.numpy as jnp
-from jax import vmap
-from colabdesign.af.alphafold.common import residue_constants
-
 from alphamask.analysis.collective_variables import CVCalculator, CVConfig, CVResult
-from alphamask.utils.compression import CompressedPredictionReader
-
-# Define atom indices as constants for clarity and maintainability
-NE_IDX = residue_constants.atom_order['NE']  # NE atom
-NZ_IDX = residue_constants.atom_order['NZ']  # NZ atom
-CD_IDX = residue_constants.atom_order['CD']  # CD atom
+from pathlib import Path
 
 def create_cesar_colormap():
     """Create Cesar's colormap."""
@@ -441,9 +420,22 @@ def create_cv_breakdown(all_results: Dict[str, List[CVResult]], output_dir: Path
     for directory in [model_dir, recycle_dir, cumulative_dir]:
         directory.mkdir(parents=True, exist_ok=True)
     
-    # Get all models and recycles
+    # First collect all models and recycles
     all_models = set()
     all_recycles = set()
+    
+    # Extract model and recycle info from all results first
+    for results in all_results.values():
+        for result in results:
+            if result.model_name:
+                match = re.search(r'model_(\d+).*_r(\d+)_', result.model_name)
+                if match:
+                    all_models.add(int(match.group(1)))
+                    all_recycles.add(int(match.group(2)))
+    
+    print(f"Found {len(all_models)} models and {len(all_recycles)} recycles")
+    print(f"Models: {sorted(all_models)}")
+    print(f"Recycles: {sorted(all_recycles)}")
     
     # Plot ranges and settings
     x_range = (-0.7, 3.1)
@@ -584,209 +576,92 @@ def create_cv_breakdown(all_results: Dict[str, List[CVResult]], output_dir: Path
                                f'{condition} - Cumulative 1-{recycle}',
                                output_path)
 
-def extract_position(filename: str) -> int:
-    """Extract position number from filename."""
-    match = re.search(r'pos_(\d+)_', filename)
-    if match:
-        return int(match.group(1))
-    return None
-
-# -----------------------------
-# 1) Define a pure JAX function
-#    to compute the CVs for a
-#    single structure.
-# -----------------------------
-def compute_cvs_single_jax(atom_positions: jnp.ndarray,
-                          cv1_res: tuple,
-                          cv2_res: tuple) -> tuple:
-    """
-    JAX-compatible function to compute CVs matching cpptraj implementation:
+def plot_cv_summary_comparison(all_results: Dict[str, List[CVResult]], output_dir: Path):
+    """Create a 2x2 summary plot comparing all conditions using recycles 0-2."""
+    # Create figure with 2x2 subplots
+    fig, axes = plt.subplots(2, 2, figsize=(20, 20))
     
-    cpptraj commands:
-    dihedral cv1 :151@CA :152@CA :153@CA :154@CA
-    distance cv2_d1 :41@NZ :58@CD
-    distance cv2_d2 :156@NE :58@CD
-    """
-    # Unpack residues
-    r1, r2, r3, r4 = cv1_res  # 151, 152, 153, 154
-    rA, rB, rRef = cv2_res    # 41, 58, 156
-    
-    # Get coordinates for dihedral
-    xyz1 = atom_positions[r1-1, residue_constants.atom_order['CA']]
-    xyz2 = atom_positions[r2-1, residue_constants.atom_order['CA']]
-    xyz3 = atom_positions[r3-1, residue_constants.atom_order['CA']]
-    xyz4 = atom_positions[r4-1, residue_constants.atom_order['CA']]
-
-    # Calculate dihedral using normal vectors method
-    # Vectors between points
-    b1 = xyz2 - xyz1  # coords[1] - coords[0]
-    b2 = xyz3 - xyz2  # coords[2] - coords[1]
-    b3 = xyz4 - xyz3  # coords[3] - coords[2]
-    
-    # Normal vectors
-    n1 = jnp.cross(b1, b2)
-    n2 = jnp.cross(b2, b3)
-    
-    # Normalize vectors
-    n1 = n1 / jnp.linalg.norm(n1)
-    n2 = n2 / jnp.linalg.norm(n2)
-    
-    # Calculate angle
-    cos_phi = jnp.dot(n1, n2)
-    sin_phi = jnp.dot(jnp.cross(n1, n2), b2 / jnp.linalg.norm(b2))
-    dihedral_angle = jnp.arctan2(sin_phi, cos_phi)
-
-    # Calculate CV2 (distance difference)
-    rA_nz = atom_positions[rA-1, residue_constants.atom_order['NZ']]    # 41@NZ
-    rB_cd = atom_positions[rB-1, residue_constants.atom_order['CD']]    # 58@CD
-    rRef_ne = atom_positions[rRef-1, residue_constants.atom_order['NE']] # 156@NE
-
-    d1 = jnp.linalg.norm(rA_nz - rB_cd)    # 41@NZ to 58@CD
-    d2 = jnp.linalg.norm(rRef_ne - rB_cd)  # 156@NE to 58@CD
-
-    return (dihedral_angle, d2 - d1)
-
-# We'll jit + vmap this: 
-# "pred_batch" will be (N, L, 37, 3)
-# so we'll compute (N, 2) results
-def compute_cvs_batch_jax(pred_batch: jnp.ndarray,
-                         cv1_res: tuple,
-                         cv2_res: tuple):
-    """
-    Batched CV computation using a single JAX call.
-    pred_batch: (N, L, 37, 3) array
-    Returns tuple of (dihedrals, diffs) arrays, each of shape (N,)
-    """
-    batched_func = jax.jit(vmap(compute_cvs_single_jax, in_axes=(0, None, None)))
-    results = batched_func(pred_batch, cv1_res, cv2_res)
-    return results  # returns (dihedrals, diffs)
-
-def process_condition(input_file: Path, config: CVConfig) -> List[CVResult]:
-    """Process a single condition file using batched JAX computation."""
-    print(f"\nProcessing {input_file.name}...")
-    reader = CompressedPredictionReader(input_file)
-    predictions = reader.get_predictions()
-    
-    if not predictions:
-        print(f"No predictions found in {input_file}")
-        return []
-    
-    # Debug info
-    print(f"\nFirst prediction atom_positions shape: {predictions[0].atom_positions.shape}")
-    print(f"Atom indices from residue_constants:")
-    print(f"CA index: {residue_constants.atom_order['CA']}")
-    print(f"NZ index: {residue_constants.atom_order['NZ']}")
-    print(f"CD index: {residue_constants.atom_order['CD']}")
-    print(f"NE index: {residue_constants.atom_order['NE']}")
-    
-    # Collect coordinates in a single array
-    coords_list = []
-    valid_names = []
-    ref_shape = predictions[0].atom_positions.shape
-    
-    for pred in predictions:
-        if pred.atom_positions.shape != ref_shape:
-            print(f"Warning: Inconsistent shape in {input_file}")
-            continue
-        coords_list.append(pred.atom_positions)
-        valid_names.append(pred.name)
-    
-    if not coords_list:
-        return []
-    
-    # Convert to JAX array and compute CVs in one batch
-    coords_array = jnp.array(coords_list)
-    cv_output = compute_cvs_batch_jax(
-        coords_array,
-        config.cv1_residues,
-        config.cv2_residues
-    )
-    dihedrals, diffs = cv_output
-    
-    # Debug first few results
-    print("\nFirst 3 results:")
-    for i in range(min(3, len(dihedrals))):
-        print(f"\nPrediction {i}:")
-        print(f"Dihedral (rad): {float(dihedrals[i]):.3f}")
-        print(f"Dihedral (deg): {float(jnp.degrees(dihedrals[i])):.3f}")
-        print(f"Distance diff: {float(diffs[i]):.3f}")
-    
-    # Convert back to CVResult objects
-    results = []
-    for i, name in enumerate(valid_names):
-        results.append(CVResult(
-            cv1_dihedral=float(dihedrals[i]),
-            cv2_diff=float(diffs[i]),
-            model_name=name
-        ))
-    
-    return results
-
-def main():
-    # Set up paths
-    base_path = Path("/work/nw99ixuq-alphamask/my_experiments/her2_39b69/apriori/Abdullah_et_al_2023_T150A_L157R")
-    input_files = {
-        "unmasked_unmutated": base_path / "unmasked_unmutated/out/compressed/Abdullah_et_al_2023_T150A_L157R_39b69_all_atoms.h5",
-        "unmasked_mutated": base_path / "unmasked_mutated/out/compressed/Abdullah_et_al_2023_T150A_L157R_39b69_mut_T150A_L157R_all_atoms.h5",
-        "masked_unmutated": base_path / "masked_unmutated/out/compressed/Abdullah_et_al_2023_T150A_L157R_39b69_mask_150_157_id_X_all_atoms.h5",
-        "masked_mutated": base_path / "masked_mutated/out/compressed/Abdullah_et_al_2023_T150A_L157R_39b69_mask_150_157_mut_T150A_L157R_id_X_all_atoms.h5"
+    # Define conditions and their titles
+    conditions = {
+        "unmasked_unmutated": "Unmasked Unmutated",
+        "unmasked_mutated": "Unmasked T150A-L157R",
+        "masked_unmutated": "Masked Unmutated",
+        "masked_mutated": "Masked T150A-L157R"
     }
     
-    output_dir = Path("tests/cv_results")
-    output_dir.mkdir(exist_ok=True)
+    # Plot ranges
+    x_range = (-0.7, 3.1)
+    y_range = (-15, 15)
     
-    # Save results to HDF5 as well
-    output_file = output_dir / "cv_results.h5"
+    # Create cesar colormap
+    cesar_cmap = create_cesar_colormap()
     
-    # Initialize config
-    config = CVConfig(
-        calculate_cv1=True,
-        calculate_cv2=True,
-        cv1_residues=(151, 152, 153, 154),
-        cv2_residues=(41, 58, 156)
-    )
-    
-    # Process all conditions and store results
-    all_results = {}
-    with h5py.File(output_file, 'w') as f:
-        # Create groups
-        meta_group = f.create_group('metadata')
-        meta_group.attrs['cv1_residues'] = config.cv1_residues
-        meta_group.attrs['cv2_residues'] = config.cv2_residues
+    # Find global maximum count for consistent coloring
+    max_count = 0
+    for results in all_results.values():
+        # Filter for recycles 0-2
+        filtered_results = []
+        for r in results:
+            if r.model_name:
+                match = re.search(r'_r(\d+)_', r.model_name)
+                if match and int(match.group(1)) <= 2:
+                    filtered_results.append(r)
         
-        for condition, input_file in input_files.items():
-            print(f"\nProcessing condition: {condition}")
-            
-            # Process condition using JAX
-            results = process_condition(input_file, config)
-            all_results[condition] = results
-            
-            # Store in HDF5
-            condition_group = f.create_group(condition)
-            cv1_group = condition_group.create_group('cv1')
-            cv2_group = condition_group.create_group('cv2')
-            
-            for i, result in enumerate(results):
-                pred_str = f'pred_{i:03d}'
-                if result.cv1_dihedral is not None:
-                    cv1_group.create_dataset(pred_str, data=result.cv1_dihedral)
-                if result.cv2_diff is not None:
-                    cv2_group.create_dataset(pred_str, data=result.cv2_diff)
-                
-                # Store metadata
-                if result.model_name:
-                    match = re.search(r'model_(\d+).*_r(\d+)_', result.model_name)
-                    if match:
-                        cv1_group[pred_str].attrs['model'] = int(match.group(1))
-                        cv1_group[pred_str].attrs['recycle'] = int(match.group(2))
-                        cv2_group[pred_str].attrs['model'] = int(match.group(1))
-                        cv2_group[pred_str].attrs['recycle'] = int(match.group(2))
+        cv1_data = [r.cv1_dihedral for r in filtered_results if r.cv1_dihedral is not None]
+        cv2_diff_data = [r.cv2_diff for r in filtered_results if r.cv2_diff is not None]
+        if cv1_data and cv2_diff_data:
+            counts, _, _ = np.histogram2d(cv1_data, cv2_diff_data, bins=50,
+                                        range=[x_range, y_range])
+            max_count = max(max_count, counts.max())
     
-    # Create comparison plots
-    plot_cv_comparison_scatter(all_results, output_dir)
-    plot_cv_comparison_hist2d(all_results, output_dir)
-    plot_cv_recycle_comparison(all_results, output_dir)
-    create_cv_breakdown(all_results, output_dir)
-
-if __name__ == "__main__":
-    main() 
+    # Plot each condition
+    for idx, (condition, results) in enumerate(all_results.items()):
+        row = idx // 2
+        col = idx % 2
+        ax = axes[row, col]
+        
+        # Filter for recycles 0-2
+        filtered_results = []
+        for r in results:
+            if r.model_name:
+                match = re.search(r'_r(\d+)_', r.model_name)
+                if match and int(match.group(1)) <= 2:
+                    filtered_results.append(r)
+        
+        # Extract data
+        cv1_data = [r.cv1_dihedral for r in filtered_results if r.cv1_dihedral is not None]
+        cv2_diff_data = [r.cv2_diff for r in filtered_results if r.cv2_diff is not None]
+        
+        # Create 2D histogram
+        hist = ax.hist2d(cv1_data, cv2_diff_data, bins=50,
+                        range=[x_range, y_range],
+                        cmap=cesar_cmap,
+                        norm=LogNorm(vmin=1, vmax=max_count))
+        
+        # Add colorbar
+        plt.colorbar(hist[3], ax=ax, label='Count')
+        
+        # Customize plot
+        ax.set_xlabel('CV1 (radians)')
+        ax.set_ylabel('CV2 (d2-d1)')
+        ax.set_title(conditions[condition], fontsize=12, pad=10, fontweight='bold')
+        ax.grid(True, linestyle='--', alpha=0.3)
+        
+        # Add summary statistics
+        stats_text = f'n = {len(cv1_data)}\n'
+        stats_text += f'CV1 mean = {np.mean(cv1_data):.2f}°\n'
+        stats_text += f'CV2 mean = {np.mean(cv2_diff_data):.2f} Å'
+        ax.text(0.02, 0.98, stats_text,
+                transform=ax.transAxes,
+                verticalalignment='top',
+                fontsize=10,
+                bbox=dict(facecolor='white', alpha=0.8))
+    
+    # Add overall title
+    plt.suptitle('Comparison of CV Distributions (Recycles 0-2)', 
+                 fontsize=16, y=0.95, fontweight='bold')
+    
+    # Adjust layout and save
+    plt.tight_layout()
+    plt.savefig(output_dir / 'cv_summary_comparison_r0_2.pdf', dpi=700, bbox_inches='tight')
+    plt.close()

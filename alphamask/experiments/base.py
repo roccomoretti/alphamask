@@ -378,6 +378,105 @@ class IterativeExperiment(BaseExperiment):
                 with open(config_path, 'w') as f:
                     yaml.dump(config, f)
     
+    def _check_position_results_exist(self, position: int, directory: Path, seq_hash: str) -> bool:
+        """Check if results exist for a specific position.
+        
+        Args:
+            position: Position to check
+            directory: Directory to check (WT or mutation directory)
+            seq_hash: Sequence hash for the protein
+            
+        Returns:
+            bool: True if results exist, False otherwise
+        """
+        # Check compressed directory first
+        compressed_dir = directory / "out" / "compressed"
+        if compressed_dir.exists():
+            # Check for h5 files
+            h5_pattern = f"*_pos_{position}_*_mask_{position}_id_X_all_atoms.h5"
+            h5_files = list(compressed_dir.glob(h5_pattern))
+            if h5_files:
+                logger.debug(f"Found existing h5 results for position {position} in {directory}")
+                return True
+            
+            # Check for npz files
+            npz_pattern = f"*_pos_{position}_*_mask_{position}_id_X_all_atoms.npz"
+            npz_files = list(compressed_dir.glob(npz_pattern))
+            if npz_files:
+                logger.debug(f"Found existing npz results for position {position} in {directory}")
+                return True
+        
+        # Check PDB directory as fallback
+        pdb_dir = directory / "out" / "pdbs"
+        if pdb_dir.exists():
+            pdb_pattern = f"*_pos_{position}_*_mask_{position}_id_X_best.pdb"
+            pdb_files = list(pdb_dir.glob(pdb_pattern))
+            if pdb_files:
+                logger.debug(f"Found existing PDB results for position {position} in {directory}")
+                return True
+        
+        return False
+
+    def _check_mutation_experiment_complete(self, mutation_dir: Path, sequence_length: int) -> bool:
+        """Check if a mutation experiment has complete results for all positions.
+        
+        Args:
+            mutation_dir: Directory containing mutation experiment results
+            sequence_length: Length of the protein sequence
+            
+        Returns:
+            bool: True if all positions have results, False otherwise
+        """
+        # Check if directory exists
+        if not mutation_dir.exists():
+            return False
+            
+        # Check compressed directory first
+        compressed_dir = mutation_dir / "out" / "compressed"
+        if compressed_dir.exists():
+            # Count h5 files for each position
+            h5_count = 0
+            npz_count = 0
+            for pos in range(1, sequence_length + 1):
+                h5_pattern = f"*_pos_{pos}_*_mask_{pos}_id_X_all_atoms.h5"
+                h5_files = list(compressed_dir.glob(h5_pattern))
+                if h5_files:
+                    h5_count += 1
+                    continue
+                    
+                # If no h5, check for npz
+                npz_pattern = f"*_pos_{pos}_*_mask_{pos}_id_X_all_atoms.npz"
+                npz_files = list(compressed_dir.glob(npz_pattern))
+                if npz_files:
+                    npz_count += 1
+                    continue
+            
+            total_results = h5_count + npz_count
+            if total_results == sequence_length:
+                logger.info(f"Found complete results in {compressed_dir} ({h5_count} h5, {npz_count} npz)")
+                return True
+        
+        # Check PDB directory as fallback
+        pdb_dir = mutation_dir / "out" / "pdbs"
+        if pdb_dir.exists():
+            pdb_count = 0
+            for pos in range(1, sequence_length + 1):
+                pdb_pattern = f"*_pos_{pos}_*_mask_{pos}_id_X_best.pdb"
+                pdb_files = list(pdb_dir.glob(pdb_pattern))
+                if pdb_files:
+                    pdb_count += 1
+            
+            if pdb_count == sequence_length:
+                logger.info(f"Found complete results in {pdb_dir} ({pdb_count} pdbs)")
+                return True
+        
+        return False
+
+    def _get_sequence_hash(self) -> str:
+        """Get hash for the protein sequence"""
+        from colabdesign.af.contrib import predict
+        return predict.get_hash(self.protein_config.sequence)[:5]
+
     def submit(self) -> bool:
         """Submit iterative masking experiment jobs"""
         try:
@@ -385,6 +484,10 @@ class IterativeExperiment(BaseExperiment):
             protein_dir = self.working_dir.parent
             shared_msa_dir = protein_dir / "in" / "msa"
             shared_msa_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Get sequence hash for checking results
+            seq_hash = self._get_sequence_hash()
+            logger.info(f"Using sequence hash: {seq_hash}")
             
             # Initialize a temporary job manager to handle MSA generation
             temp_job_manager = SlurmJobManager(
@@ -416,77 +519,92 @@ class IterativeExperiment(BaseExperiment):
             # Create MSA directory at root level
             (self.working_dir / "in" / "msa").mkdir(parents=True, exist_ok=True)
             
+            # Get sequence length for checking completeness
+            sequence_length = len(self.protein_config.sequence)
+            
             # Create WT directory with its subdirectories
             wt_dir = self.working_dir / "WT"
             wt_dir.mkdir(parents=True, exist_ok=True)
             
-            for subdir in ["configs", "scripts", "logs", "in", "out", "schema"]:
-                (wt_dir / subdir).mkdir(parents=True, exist_ok=True)
-            
-            # Create MSA directory for WT
-            (wt_dir / "in" / "msa").mkdir(parents=True, exist_ok=True)
-            (wt_dir / "out" / "pdbs").mkdir(parents=True, exist_ok=True)
-            
-            # Create WT config and position-specific configs
-            sequence_length = len(self.protein_config.sequence)
-            
-            # Create WT position-specific configs
-            for pos in range(1, sequence_length + 1):
-                config = {
-                    "sequence": self.protein_config.sequence,
-                    "jobname": f"WT_pos_{pos}",
-                    "parent_path": str(wt_dir),
-                    "setup_path": str(self.slurm_config.setup_path),
-                    "pipeline_type": "masking",  # Explicitly set pipeline type for WT
-                    "masking_mode": "list",
-                    "mask_msa": True,
-                    "mask_deletion_matrix": True,
-                    "cols": [pos],
-                    "mask_identity": self.protein_config.iterative_masking.mask_token,
-                    "num_recycles": self.defaults.get('num_recycles', 2),
-                    "num_seeds": self.defaults.get('num_seeds', 2),
-                    # Add all required default values
-                    "unified_memory": self.defaults.get('unified_memory', False),
-                    "copies": self.defaults.get('copies', 1),
-                    "msa_method": "custom_a3m",
-                    "custom_a3m_path": str(shared_msa_dir / "msa.a3m"),  # Use shared MSA path
-                    "pair_mode": self.defaults.get('pair_mode', 'unpaired_paired'),
-                    "cov": self.defaults.get('cov', 75),
-                    "id": self.defaults.get('id', 90),
-                    "qid": self.defaults.get('qid', 0),
-                    "do_not_filter": self.defaults.get('do_not_filter', False),
-                    "template_mode": self.defaults.get('template_mode', 'none'),
-                    "pdb": self.defaults.get('pdb', ''),
-                    "chain": self.defaults.get('chain', 'A'),
-                    "rm_template_seq": self.defaults.get('rm_template_seq', False),
-                    "propagate_to_copies": self.defaults.get('propagate_to_copies', True),
-                    "do_not_align": self.defaults.get('do_not_align', False),
-                    "model_type": self.defaults.get('model_type', 'monomer (ptm)'),
-                    "rank_by": self.defaults.get('rank_by', 'auto'),
-                    "debug": self.defaults.get('debug', False),
-                    "use_initial_guess": self.defaults.get('use_initial_guess', False),
-                    "num_msa": self.defaults.get('num_msa', 512),
-                    "num_extra_msa": self.defaults.get('num_extra_msa', 1024),
-                    "use_cluster_profile": self.defaults.get('use_cluster_profile', True),
-                    "model": self.defaults.get('model', 'all'),
-                    "recycle_early_stop_tolerance": self.defaults.get('recycle_early_stop_tolerance', 0.0),
-                    "select_best_across_recycles": self.defaults.get('select_best_across_recycles', False),
-                    "use_mlm": self.defaults.get('use_mlm', False),
-                    "use_dropout": self.defaults.get('use_dropout', False),
-                    "seed": self.defaults.get('seed', 0),
-                    "show_images": self.defaults.get('show_images', False),
-                    "cols_range": self.defaults.get('cols_range', [])
-                }
+            # Check if WT experiment is complete
+            if self._check_mutation_experiment_complete(wt_dir, sequence_length):
+                logger.info("Skipping WT experiment - all positions have results")
+            else:
+                for subdir in ["configs", "scripts", "logs", "in", "out", "schema"]:
+                    (wt_dir / subdir).mkdir(parents=True, exist_ok=True)
                 
-                config_path = wt_dir / "configs" / f"WT_config_pos_{pos}.yaml"
-                with open(config_path, 'w') as f:
-                    yaml.dump(config, f)
-                logger.info(f"Created WT position config at {config_path}")
+                # Create MSA directory for WT
+                (wt_dir / "in" / "msa").mkdir(parents=True, exist_ok=True)
+                (wt_dir / "out" / "pdbs").mkdir(parents=True, exist_ok=True)
+                
+                # Create WT position-specific configs
+                for pos in range(1, sequence_length + 1):
+                    # Skip if results already exist
+                    if self._check_position_results_exist(pos, wt_dir, seq_hash):
+                        logger.info(f"Skipping WT position {pos} - results already exist")
+                        continue
+                    
+                    config = {
+                        "sequence": self.protein_config.sequence,
+                        "jobname": f"WT_pos_{pos}",
+                        "parent_path": str(wt_dir),
+                        "setup_path": str(self.slurm_config.setup_path),
+                        "pipeline_type": "masking",  # Explicitly set pipeline type for WT
+                        "masking_mode": "list",
+                        "mask_msa": True,
+                        "mask_deletion_matrix": True,
+                        "cols": [pos],
+                        "mask_identity": self.protein_config.iterative_masking.mask_token,
+                        "num_recycles": self.defaults.get('num_recycles', 2),
+                        "num_seeds": self.defaults.get('num_seeds', 2),
+                        # Add all required default values
+                        "unified_memory": self.defaults.get('unified_memory', False),
+                        "copies": self.defaults.get('copies', 1),
+                        "msa_method": "custom_a3m",
+                        "custom_a3m_path": str(shared_msa_dir / "msa.a3m"),  # Use shared MSA path
+                        "pair_mode": self.defaults.get('pair_mode', 'unpaired_paired'),
+                        "cov": self.defaults.get('cov', 75),
+                        "id": self.defaults.get('id', 90),
+                        "qid": self.defaults.get('qid', 0),
+                        "do_not_filter": self.defaults.get('do_not_filter', False),
+                        "template_mode": self.defaults.get('template_mode', 'none'),
+                        "pdb": self.defaults.get('pdb', ''),
+                        "chain": self.defaults.get('chain', 'A'),
+                        "rm_template_seq": self.defaults.get('rm_template_seq', False),
+                        "propagate_to_copies": self.defaults.get('propagate_to_copies', True),
+                        "do_not_align": self.defaults.get('do_not_align', False),
+                        "model_type": self.defaults.get('model_type', 'monomer (ptm)'),
+                        "rank_by": self.defaults.get('rank_by', 'auto'),
+                        "debug": self.defaults.get('debug', False),
+                        "use_initial_guess": self.defaults.get('use_initial_guess', False),
+                        "num_msa": self.defaults.get('num_msa', 512),
+                        "num_extra_msa": self.defaults.get('num_extra_msa', 1024),
+                        "use_cluster_profile": self.defaults.get('use_cluster_profile', True),
+                        "model": self.defaults.get('model', 'all'),
+                        "recycle_early_stop_tolerance": self.defaults.get('recycle_early_stop_tolerance', 0.0),
+                        "select_best_across_recycles": self.defaults.get('select_best_across_recycles', False),
+                        "use_mlm": self.defaults.get('use_mlm', False),
+                        "use_dropout": self.defaults.get('use_dropout', False),
+                        "seed": self.defaults.get('seed', 0),
+                        "show_images": self.defaults.get('show_images', False),
+                        "cols_range": self.defaults.get('cols_range', [])
+                    }
+                    
+                    config_path = wt_dir / "configs" / f"WT_config_pos_{pos}.yaml"
+                    with open(config_path, 'w') as f:
+                        yaml.dump(config, f)
+                    logger.info(f"Created WT position config at {config_path}")
             
             # Create mutation directories and their position-specific configs
             for mutation_set in self.protein_config.iterative_masking.mutations:
                 mutation_name = '_'.join(mutation_set)
                 mutation_dir = self.working_dir / mutation_name
+                
+                # Check if mutation experiment is complete
+                if self._check_mutation_experiment_complete(mutation_dir, sequence_length):
+                    logger.info(f"Skipping {mutation_name} experiment - all positions have results")
+                    continue
+                
                 mutation_dir.mkdir(parents=True, exist_ok=True)
                 
                 # Create standard subdirectories for mutation
@@ -499,6 +617,11 @@ class IterativeExperiment(BaseExperiment):
                 
                 # Create position-specific configs for mutation
                 for pos in range(1, sequence_length + 1):
+                    # Skip if results already exist
+                    if self._check_position_results_exist(pos, mutation_dir, seq_hash):
+                        logger.info(f"Skipping {mutation_name} position {pos} - results already exist")
+                        continue
+                    
                     config = {
                         "sequence": self.protein_config.sequence,
                         "jobname": f"{mutation_name}_pos_{pos}",
@@ -568,22 +691,39 @@ class IterativeExperiment(BaseExperiment):
                 job_name=self.name
             )
             
-            # Submit WT position-specific jobs
-            for pos in range(1, sequence_length + 1):
-                config_path = wt_dir / "configs" / f"WT_config_pos_{pos}.yaml"
-                job_id = job_manager.submit_job(
-                    str(config_path),
-                    f"WT_pos_{pos}",
-                    script_dir=str(wt_dir / "scripts"),
-                    log_dir=str(wt_dir / "logs")
-                )
-                logger.debug(f"Submitted WT position {pos} job with ID: {job_id}")
+            # Submit WT position-specific jobs if not complete
+            if not self._check_mutation_experiment_complete(wt_dir, sequence_length):
+                for pos in range(1, sequence_length + 1):
+                    # Skip if results already exist
+                    if self._check_position_results_exist(pos, wt_dir, seq_hash):
+                        logger.info(f"Skipping WT position {pos} - results already exist")
+                        continue
+                    
+                    config_path = wt_dir / "configs" / f"WT_config_pos_{pos}.yaml"
+                    job_id = job_manager.submit_job(
+                        str(config_path),
+                        f"WT_pos_{pos}",
+                        script_dir=str(wt_dir / "scripts"),
+                        log_dir=str(wt_dir / "logs")
+                    )
+                    logger.debug(f"Submitted WT position {pos} job with ID: {job_id}")
             
             # Submit mutation position-specific jobs
             for mutation_set in self.protein_config.iterative_masking.mutations:
                 mutation_name = '_'.join(mutation_set)
                 mutation_dir = self.working_dir / mutation_name
+                
+                # Skip if mutation experiment is complete
+                if self._check_mutation_experiment_complete(mutation_dir, sequence_length):
+                    logger.info(f"Skipping {mutation_name} experiment - all positions have results")
+                    continue
+                
                 for pos in range(1, sequence_length + 1):
+                    # Skip if results already exist
+                    if self._check_position_results_exist(pos, mutation_dir, seq_hash):
+                        logger.info(f"Skipping {mutation_name} position {pos} - results already exist")
+                        continue
+                    
                     config_path = mutation_dir / "configs" / f"{mutation_name}_config_pos_{pos}.yaml"
                     job_id = job_manager.submit_job(
                         str(config_path),

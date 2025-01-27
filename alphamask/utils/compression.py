@@ -40,7 +40,10 @@ class CompressedPredictionReader:
         logger.debug(f"Opening HDF5 file: {self.file_path}")
         
         try:
-            with h5py.File(self.file_path, 'r', libver='latest', swmr=True) as f:
+            # Increase chunk cache while preserving existing SWMR & libver settings
+            with h5py.File(self.file_path, 'r', libver='latest', swmr=True,
+                           rdcc_nbytes=1024*1024*128,  # 128 MB chunk cache
+                           rdcc_nslots=1_000_000) as f:
                 open_time = time.time()
                 logger.debug(f"File opened in {open_time - start_time:.2f}s")
                 
@@ -54,15 +57,15 @@ class CompressedPredictionReader:
                 predictions = [None] * n_predictions
                 current_idx = 0
                 
-                # Log structure for debugging
-                logger.debug("File structure:")
-                for key in data_group.keys():
-                    logger.debug(f"  - {key}")
-                    if current_idx == 0:  # Only log first prediction details
-                        group = data_group[key]
-                        logger.debug("First prediction details:")
-                        for subkey in group.keys():
-                            logger.debug(f"    - {subkey}: {group[subkey].shape}")
+                # Comment out the detailed debug-logging for each dataset's shape
+                # logger.debug("File structure:")
+                # for key in data_group.keys():
+                #     logger.debug(f"  - {key}")
+                #     if current_idx == 0:
+                #         group = data_group[key]
+                #         logger.debug("First prediction details:")
+                #         for subkey in group.keys():
+                #             logger.debug(f"    - {subkey}: {group[subkey].shape}")
                 
                 for pred_name in data_group.keys():
                     read_start = time.time()
@@ -74,7 +77,7 @@ class CompressedPredictionReader:
                             coords = pred_group['atom_positions'][:]
                             plddt = pred_group['plddt'][:]
                             
-                            # Parse prediction info efficiently
+                            # Parse prediction info
                             parts = pred_name.split('_')
                             seed = next((p.replace('seed_', '') for p in parts if p.startswith('seed_')), "1")
                             model = next((p.replace('model_', '') for p in parts if p.startswith('model_')), "1")
@@ -91,9 +94,8 @@ class CompressedPredictionReader:
                             current_idx += 1
                             
                             read_time = time.time() - read_start
-                            if current_idx % 5 == 0:  # Log every 5 predictions
-                                pass
-                                # logger.debug(f"Read prediction {current_idx}/{n_predictions} in {read_time:.2f}s")
+                            # if current_idx % 5 == 0:
+                            #     logger.debug(f"Read prediction {current_idx}/{n_predictions} in {read_time:.2f}s")
                                 
                     except Exception as e:
                         logger.warning(f"Failed to read prediction {pred_name}: {str(e)}")

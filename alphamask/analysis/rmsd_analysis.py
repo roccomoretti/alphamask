@@ -16,6 +16,7 @@ from .statistics import RMSDAnalyzer
 from .visualization.rmsd_visualizer import RMSDVisualizer
 from .storage import Storage
 from ..utils.compression import CompressedPredictionReader
+from .collective_variables import CVCalculator, CVConfig, CVResult
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,17 @@ class RMSDAnalysis:
         
         # Create output directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize CV calculator if configured
+        self.cv_calculator = None
+        if hasattr(config, 'calculate_cvs') and config.calculate_cvs:
+            cv_config = CVConfig(
+                calculate_cv1=True,
+                calculate_cv2=True,
+                cv1_residues=(151, 152, 153, 154),
+                cv2_residues=(41, 58, 156)
+            )
+            self.cv_calculator = CVCalculator(cv_config)
 
         
     def _load_reference(self, pdb_path: Union[str, Path]) -> np.ndarray:
@@ -272,8 +284,23 @@ class RMSDAnalysis:
             # Store batch data
             if batch_data:
                 self.storage.store_rmsd_results_batch(batch_data)
-                return {comp_file.stem: rmsd_results}
-            return {}
+                results = {comp_file.stem: rmsd_results}
+            else:
+                results = {}
+            
+            # Calculate CVs if configured
+            cv_results = []
+            if self.cv_calculator is not None:
+                for pred in predictions:
+                    cv_result = self.cv_calculator.calculate_cvs(pred)
+                    cv_results.append(cv_result)
+            
+            # Store CV results in storage
+            if cv_results:
+                # Add CV results to storage logic here
+                pass
+            
+            return results
             
         except Exception as e:
             logger.error(f"Failed to process {comp_file}: {str(e)}")

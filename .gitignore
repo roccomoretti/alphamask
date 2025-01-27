@@ -14,3 +14,9 @@ my_experiments/*
 logs/prediction.log
 submit_debug.sh
 alphamask/her2-msa.a3m
+alphamask/interactive_plots/*
+alphamask/tests/*/*.png
+alphamask/tests/cv_results_apriori_massive/*
+alphamask/tests/cv_results_iterative_massive/*
+alphamask/analysis/visualization/alphamask.code-workspace
+alphamask/config/frustra.yaml
