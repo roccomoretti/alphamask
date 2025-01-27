@@ -704,7 +704,7 @@ class IterativeExperiment(BaseExperiment):
                         str(config_path),
                         f"WT_pos_{pos}",
                         script_dir=str(wt_dir / "scripts"),
-                        log_dir=str(wt_dir / "logs")
+                        log_dir=str(wt_dir / "logs") 
                     )
                     logger.debug(f"Submitted WT position {pos} job with ID: {job_id}")
             
@@ -1177,18 +1177,106 @@ class FrustraExperiment(BaseExperiment):
             logger.error(f"Failed to run FrustraPy analysis: {str(e)}")
             raise
     
-    def _create_mutation_experiments(self, positions: List[int]) -> None:
-        """Create mutation experiments for the identified positions
+    def _run_single_residue_analysis(self, pdb_path: Path, positions: List[int]) -> Dict[int, Dict]:
+        """Run single residue frustration analysis to find most frustrated mutations
+        
+        Args:
+            pdb_path: Path to the PDB file to analyze
+            positions: List of positions to analyze
+            
+        Returns:
+            Dictionary mapping residue numbers to their mutation data
+        """
+        try:
+            # Create analysis subdirectory for single residue analysis
+            single_residue_dir = self.analysis_dir / "singleresidue"
+            single_residue_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Prepare residues for analysis using chain A
+            residues_to_analyze = {"A": positions}
+            
+            # Run FrustraPy analysis in single residue mode
+            logger.info(f"Running single residue analysis for positions: {positions}")
+            _, _, _, single_residue_data = frustrapy.calculate_frustration(
+                pdb_file=str(pdb_path),
+                mode="singleresidue",
+                results_dir=str(single_residue_dir),
+                debug="INFO",
+                chain="A",
+                residues=residues_to_analyze
+            )
+            
+            # Dictionary to store most frustrated mutations
+            most_frustrated_mutations = {}
+            
+            # Amino acid conversion dictionary
+            THREE_TO_ONE = {
+                'ALA': 'A', 'CYS': 'C', 'ASP': 'D', 'GLU': 'E',
+                'PHE': 'F', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
+                'LYS': 'K', 'LEU': 'L', 'MET': 'M', 'ASN': 'N',
+                'PRO': 'P', 'GLN': 'Q', 'ARG': 'R', 'SER': 'S',
+                'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y'
+            }
+            
+            # Analyze single residue data
+            if single_residue_data and "A" in single_residue_data:
+                for res_num in positions:
+                    if res_num in single_residue_data["A"]:
+                        res_data = single_residue_data["A"][res_num]
+                        mutations = res_data.mutations
+                        
+                        # Convert three-letter code to one-letter code
+                        native_one_letter = THREE_TO_ONE.get(res_data.residue_name.upper(), 'X')
+                        
+                        # Find most frustrated mutation
+                        most_frustrated = min(mutations.items(), key=lambda x: x[1])
+                        
+                        # Store mutation data
+                        most_frustrated_mutations[res_num] = {
+                            'native': native_one_letter,
+                            'mutation': most_frustrated[0],
+                            'frustration_index': most_frustrated[1],
+                            'mutation_string': f"{native_one_letter}{res_num}{most_frustrated[0]}",
+                            'all_mutations': dict(sorted(mutations.items(), key=lambda x: x[1]))
+                        }
+                        
+                        logger.info(f"Position {res_num}: Most frustrated mutation {native_one_letter}->{most_frustrated[0]} "
+                                  f"(FI: {most_frustrated[1]:.3f})")
+            
+            # Save results
+            import pickle
+            results = {
+                'mutations': most_frustrated_mutations,
+                'mode': 'singleresidue',
+                'pdb': str(pdb_path)
+            }
+            
+            with open(self.analysis_dir / 'single_residue_results.pkl', 'wb') as f:
+                pickle.dump(results, f)
+            
+            return most_frustrated_mutations
+            
+        except Exception as e:
+            logger.error(f"Failed to run single residue analysis: {str(e)}")
+            raise
+
+    def _create_mutation_experiments(self, positions: List[int], mutations_data: Dict[int, Dict]) -> None:
+        """Create mutation experiments for the identified positions with their most frustrated mutations
         
         Args:
             positions: List of positions identified by FrustraPy analysis
+            mutations_data: Dictionary containing mutation data for each position
         """
         for pos in positions:
-            # Get the original amino acid at this position
-            orig_aa = self.protein_config.sequence[pos-1]
+            if pos not in mutations_data:
+                logger.warning(f"No mutation data found for position {pos}")
+                continue
             
-            # Create mutation directory
-            mutation_name = f"pos_{pos}"
+            mutation_data = mutations_data[pos]
+            mutation_string = mutation_data['mutation_string']
+            
+            # Create mutation directory using mutation string
+            mutation_name = f"pos_{pos}_{mutation_string}"
             mutation_dir = self.working_dir / mutation_name
             
             if not self.dry_run:
@@ -1213,14 +1301,18 @@ class FrustraExperiment(BaseExperiment):
             # Store mutation information
             self.mutations.append({
                 'position': pos,
-                'original_aa': orig_aa,
+                'original_aa': mutation_data['native'],
+                'mutation': mutation_data['mutation'],
+                'frustration_index': mutation_data['frustration_index'],
+                'mutation_string': mutation_string,
                 'directory': mutation_dir
             })
-    
+
     def _create_config(self) -> ExperimentConfig:
         """Create configuration for Frustra masking experiment"""
-        # Get shared MSA path
-        shared_msa_dir = self.working_dir.parent / "in" / "msa"
+        # Get shared MSA path from the protein root directory
+        protein_dir = self.working_dir.parent
+        shared_msa_dir = protein_dir / "in" / "msa"
         shared_msa_path = shared_msa_dir / "msa.a3m"
         
         config = {
@@ -1232,7 +1324,7 @@ class FrustraExperiment(BaseExperiment):
             "setup_path": str(self.slurm_config.setup_path),
             "pipeline_type": "masking",  # Will be overridden based on condition
             "msa_method": "custom_a3m",  # Always use custom MSA
-            "custom_a3m_path": str(shared_msa_path),  # Use shared MSA path
+            "custom_a3m_path": str(shared_msa_path),  # Use shared MSA path from protein root
             "masking_mode": "off",  # Default to off, will be set to "list" if masking
             "mask_msa": False,  # Default to False, will be set to True if masking
             "mask_deletion_matrix": False,  # Default to False, will be set to True if masking
@@ -1242,7 +1334,7 @@ class FrustraExperiment(BaseExperiment):
         }
         
         return ExperimentConfig(**config)
-    
+
     def submit(self) -> bool:
         """Submit Frustra masking experiment jobs to SLURM"""
         try:
@@ -1271,17 +1363,20 @@ class FrustraExperiment(BaseExperiment):
                 schema_path=self.slurm_config.schema_path
             )
             
+            # Create MSA config specifically for generation
+            msa_config = ExperimentConfig(
+                sequence=self.protein_config.sequence,
+                jobname_prefix="msa_generation",
+                parent_path=str(shared_msa_dir.parent),  # Use 'in' directory as parent
+                setup_path=str(self.slurm_config.setup_path),
+                pipeline_type="default",
+                msa_method="mmseqs2"  # Force MSA generation
+            )
+            
             temp_job_manager = SlurmJobManager(
-                experiment_config=ExperimentConfig(
-                    sequence=self.protein_config.sequence,
-                    jobname_prefix="msa_generation",
-                    parent_path=str(shared_msa_dir.parent),  # Use 'in' directory as parent
-                    setup_path=str(self.slurm_config.setup_path),
-                    pipeline_type="default",
-                    msa_method="mmseqs2"  # Force MSA generation
-                ),
-                slurm_config=msa_slurm_config,  # Use our config with correct partition/GPU
-                working_dir=str(shared_msa_dir.parent),  # Use 'in' directory as working dir
+                experiment_config=msa_config,
+                slurm_config=msa_slurm_config,
+                working_dir=str(shared_msa_dir.parent),
                 job_name="msa_generation"
             )
             
@@ -1360,8 +1455,11 @@ class FrustraExperiment(BaseExperiment):
             # Run FrustraPy analysis on the control PDB
             positions = self._run_frustra_analysis(control_pdb)
             
-            # Create mutation experiments for identified positions
-            self._create_mutation_experiments(positions)
+            # Run single residue analysis to find most frustrated mutations
+            mutations_data = self._run_single_residue_analysis(control_pdb, positions)
+            
+            # Create mutation experiments with the identified mutations
+            self._create_mutation_experiments(positions, mutations_data)
             
             # Submit jobs for each mutation and condition
             for mutation in self.mutations:
@@ -1388,28 +1486,39 @@ class FrustraExperiment(BaseExperiment):
                     # Set pipeline type based on condition
                     if condition.mask and condition.mutate:
                         config.pipeline_type = "mutate_and_mask"
-                    elif condition.mask:
-                        config.pipeline_type = "masking"
-                    elif condition.mutate:
-                        config.pipeline_type = "mutate"
-                    else:
-                        config.pipeline_type = "default"
-                    
-                    # Set positions and cols for masking
-                    if condition.mask:
-                        config.positions = [pos]
-                        config.cols = [pos]
+                        # Add mutation information
+                        config.mutations = [mutation['mutation_string']]  # Add the mutation string
                         config.masking_mode = "list"
                         config.mask_msa = True
                         config.mask_deletion_matrix = True
+                        config.positions = [pos]
+                        config.cols = [pos]
+                    elif condition.mask:
+                        config.pipeline_type = "masking"
+                        config.masking_mode = "list"
+                        config.mask_msa = True
+                        config.mask_deletion_matrix = True
+                        config.positions = [pos]
+                        config.cols = [pos]
+                    elif condition.mutate:
+                        config.pipeline_type = "mutate"
+                        # Add mutation information
+                        config.mutations = [mutation['mutation_string']]  # Add the mutation string
+                        config.masking_mode = "off"
+                        config.mask_msa = False
+                        config.mask_deletion_matrix = False
+                        config.positions = []
+                        config.cols = []
                     else:
+                        config.pipeline_type = "default"
                         config.masking_mode = "off"
                         config.mask_msa = False
                         config.mask_deletion_matrix = False
                         config.positions = []
                         config.cols = []
                     
-                    # Initialize job manager for this condition
+
+                    # Create job manager for this condition
                     condition_slurm_config = SlurmJobConfig(
                         partition=self.slurm_config.partition,
                         gpu_type=self.slurm_config.gpu_type,
@@ -1417,9 +1526,10 @@ class FrustraExperiment(BaseExperiment):
                         container_path=self.slurm_config.container_path,
                         schema_path=self.slurm_config.schema_path
                     )
+                    
                     job_manager = SlurmJobManager(
                         experiment_config=config,
-                        slurm_config=condition_slurm_config,  # Use our config with correct partition/GPU
+                        slurm_config=condition_slurm_config,
                         working_dir=str(condition_dir),
                         job_name=f"frustra_pos_{pos}_{condition_name}"
                     )
