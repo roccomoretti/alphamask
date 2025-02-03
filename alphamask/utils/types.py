@@ -72,6 +72,7 @@ class ExperimentConfig:
     mask_msa: bool = None
     mask_deletion_matrix: bool = None
     mask_identity: str = None
+    mask_token: str = None
     positions: Optional[List[int]] = None
     num_recycles: int = None
     num_seeds: int = None
@@ -108,6 +109,7 @@ class ExperimentConfig:
             mask_msa=self.mask_msa,
             mask_deletion_matrix=self.mask_deletion_matrix,
             mask_identity=self.mask_identity,
+            mask_token=self.mask_token,
             positions=self.positions.copy() if self.positions else None,
             num_recycles=self.num_recycles,
             num_seeds=self.num_seeds,

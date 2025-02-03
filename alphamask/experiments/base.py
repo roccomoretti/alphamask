@@ -4,6 +4,7 @@ from typing import List, Optional, Dict, Tuple
 from pathlib import Path
 import logging
 import yaml
+import time
 
 from ..utils.slurm import SlurmJobManager, SlurmJobConfig
 from ..utils.types import ExperimentConfig
@@ -227,13 +228,16 @@ class Control:
         
         return config, job_name
     
-    def run(self) -> bool:
+    def run(self, msa_path: Path) -> bool:
         """Run control experiments for all conditions"""
         try:
             config, job_name = self.create_experiment_config(
                 Condition(mask=False, mutate=False)
             )
-            
+            logger.info(f"For control {job_name} using shared MSA at {msa_path}")
+            config.custom_a3m_path = str(msa_path)
+            config.msa_method = "custom_a3m"
+
             job_manager = SlurmJobManager(
                 experiment_config=config,
                 slurm_config=self.slurm_config,
@@ -275,8 +279,10 @@ class IterativeExperiment(BaseExperiment):
     
     def validate(self) -> None:
         """Validate iterative masking configuration"""
-        if not self.protein_config.iterative_masking.mutations:
-            raise ExperimentError("No mutations specified for iterative masking")
+        if not hasattr(self.protein_config.iterative_masking, 'mutation_sets'):
+            raise ExperimentError("No mutation_sets specified for iterative masking")
+        if not self.protein_config.iterative_masking.mutation_sets:
+            raise ExperimentError("mutation_sets cannot be empty")
     
     def setup(self) -> None:
         """Set up iterative masking experiment"""
@@ -315,10 +321,14 @@ class IterativeExperiment(BaseExperiment):
             with open(config_path, 'w') as f:
                 yaml.dump(config, f)
         
-        # Handle mutations
-        for mutation_set in self.protein_config.iterative_masking.mutations:
-            # Create directory for mutation(s)
-            mutation_name = '_'.join(mutation_set)
+        # Handle mutation sets with always_mask positions
+        for mutation_set in self.protein_config.iterative_masking.mutation_sets:
+            # Create directory name that includes mutations and always_mask positions
+            mutation_name = '_'.join(mutation_set['mutations'])
+            if 'always_mask' in mutation_set:
+                mask_str = 'mask_' + '_'.join(str(pos) for pos in sorted(mutation_set['always_mask']))
+                mutation_name = f"{mutation_name}_{mask_str}"
+            
             mutation_dir = self.working_dir / mutation_name
             mutation_dir.mkdir(parents=True, exist_ok=True)
             
@@ -326,20 +336,31 @@ class IterativeExperiment(BaseExperiment):
             mut_configs_dir = mutation_dir / "configs"
             mut_configs_dir.mkdir(parents=True, exist_ok=True)
             
-            # Create configs for each position with mutation
+            # Create configs for each position with mutation and always_mask positions
             for pos in range(1, sequence_length + 1):
+                # Skip if results already exist
+                if self._check_position_results_exist(pos, mutation_dir):
+                    logger.info(f"Skipping {mutation_name} position {pos} - results already exist")
+                    continue
+                
+                # Combine current position with always_mask positions
+                mask_positions = [pos]
+                if 'always_mask' in mutation_set:
+                    mask_positions.extend(mutation_set['always_mask'])
+                mask_positions = sorted(list(set(mask_positions)))  # Remove duplicates and sort
+                
                 config = {
                     "sequence": self.protein_config.sequence,
                     "jobname_prefix": f"{mutation_name}_pos_{pos}",
-                    "parent_path": str(mutation_dir),
+                    "parent_path": str(self.working_dir / mutation_name),
                     "setup_path": str(self.slurm_config.setup_path),
                     "pipeline_type": "mutate_and_mask",
                     "masking_mode": "list",
                     "mask_msa": True,
                     "mask_deletion_matrix": True,
-                    "cols": [pos],
+                    "cols": mask_positions,  # Use combined positions
                     "mask_identity": self.protein_config.iterative_masking.mask_token,
-                    "mutations": mutation_set,
+                    "mutations": mutation_set['mutations'],
                     "wt_msa_path": self.working_dir / "WT/in/msa.a3m",
                     "custom_a3m_path": self.working_dir / "WT/in/msa.a3m",
                     "msa_method": "custom_a3m",
@@ -378,13 +399,12 @@ class IterativeExperiment(BaseExperiment):
                 with open(config_path, 'w') as f:
                     yaml.dump(config, f)
     
-    def _check_position_results_exist(self, position: int, directory: Path, seq_hash: str) -> bool:
+    def _check_position_results_exist(self, position: int, directory: Path) -> bool:
         """Check if results exist for a specific position.
         
         Args:
             position: Position to check
             directory: Directory to check (WT or mutation directory)
-            seq_hash: Sequence hash for the protein
             
         Returns:
             bool: True if results exist, False otherwise
@@ -480,307 +500,87 @@ class IterativeExperiment(BaseExperiment):
     def submit(self) -> bool:
         """Submit iterative masking experiment jobs"""
         try:
-            # Get protein root directory for shared MSA
-            protein_dir = self.working_dir.parent
-            shared_msa_dir = protein_dir / "in" / "msa"
-            shared_msa_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Get sequence hash for checking results
-            seq_hash = self._get_sequence_hash()
-            logger.info(f"Using sequence hash: {seq_hash}")
-            
-            # Initialize a temporary job manager to handle MSA generation
-            temp_job_manager = SlurmJobManager(
-                experiment_config=ExperimentConfig(
-                    sequence=self.protein_config.sequence,
-                    jobname_prefix="msa_generation",
-                    parent_path=str(shared_msa_dir.parent),  # Use 'in' directory as parent
-                    setup_path=str(self.slurm_config.setup_path),
-                    pipeline_type="default",  # Force MSA generation
-                    msa_method="mmseqs2"  # Use mmseqs2 for MSA generation
-                ),
-                slurm_config=self.slurm_config,
-                working_dir=str(shared_msa_dir.parent),  # Use 'in' directory as working dir
-                job_name="msa_generation"
-            )
-            
-            # Generate MSA first
-            logger.info("Generating shared MSA...")
-            temp_job_manager._handle_msa()
-            logger.info("MSA generation complete")
-            
-            # Ensure working directory exists
-            self.working_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Create standard subdirectories at root level
-            for subdir in ["configs", "scripts", "logs", "in", "out", "schema"]:
-                (self.working_dir / subdir).mkdir(parents=True, exist_ok=True)
-            
-            # Create MSA directory at root level
-            (self.working_dir / "in" / "msa").mkdir(parents=True, exist_ok=True)
-            
             # Get sequence length for checking completeness
             sequence_length = len(self.protein_config.sequence)
             
-            # Create WT directory with its subdirectories
-            wt_dir = self.working_dir / "WT"
-            wt_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Check if WT experiment is complete
-            if self._check_mutation_experiment_complete(wt_dir, sequence_length):
-                logger.info("Skipping WT experiment - all positions have results")
-            else:
-                for subdir in ["configs", "scripts", "logs", "in", "out", "schema"]:
-                    (wt_dir / subdir).mkdir(parents=True, exist_ok=True)
-                
-                # Create MSA directory for WT
-                (wt_dir / "in" / "msa").mkdir(parents=True, exist_ok=True)
-                (wt_dir / "out" / "pdbs").mkdir(parents=True, exist_ok=True)
-                
-                # Create WT position-specific configs
-                for pos in range(1, sequence_length + 1):
-                    # Skip if results already exist
-                    if self._check_position_results_exist(pos, wt_dir, seq_hash):
-                        logger.info(f"Skipping WT position {pos} - results already exist")
-                        continue
-                    
-                    config = {
-                        "sequence": self.protein_config.sequence,
-                        "jobname": f"WT_pos_{pos}",
-                        "parent_path": str(wt_dir),
-                        "setup_path": str(self.slurm_config.setup_path),
-                        "pipeline_type": "masking",  # Explicitly set pipeline type for WT
-                        "masking_mode": "list",
-                        "mask_msa": True,
-                        "mask_deletion_matrix": True,
-                        "cols": [pos],
-                        "mask_identity": self.protein_config.iterative_masking.mask_token,
-                        "num_recycles": self.defaults.get('num_recycles', 2),
-                        "num_seeds": self.defaults.get('num_seeds', 2),
-                        # Add all required default values
-                        "unified_memory": self.defaults.get('unified_memory', False),
-                        "copies": self.defaults.get('copies', 1),
-                        "msa_method": "custom_a3m",
-                        "custom_a3m_path": str(shared_msa_dir / "msa.a3m"),  # Use shared MSA path
-                        "pair_mode": self.defaults.get('pair_mode', 'unpaired_paired'),
-                        "cov": self.defaults.get('cov', 75),
-                        "id": self.defaults.get('id', 90),
-                        "qid": self.defaults.get('qid', 0),
-                        "do_not_filter": self.defaults.get('do_not_filter', False),
-                        "template_mode": self.defaults.get('template_mode', 'none'),
-                        "pdb": self.defaults.get('pdb', ''),
-                        "chain": self.defaults.get('chain', 'A'),
-                        "rm_template_seq": self.defaults.get('rm_template_seq', False),
-                        "propagate_to_copies": self.defaults.get('propagate_to_copies', True),
-                        "do_not_align": self.defaults.get('do_not_align', False),
-                        "model_type": self.defaults.get('model_type', 'monomer (ptm)'),
-                        "rank_by": self.defaults.get('rank_by', 'auto'),
-                        "debug": self.defaults.get('debug', False),
-                        "use_initial_guess": self.defaults.get('use_initial_guess', False),
-                        "num_msa": self.defaults.get('num_msa', 512),
-                        "num_extra_msa": self.defaults.get('num_extra_msa', 1024),
-                        "use_cluster_profile": self.defaults.get('use_cluster_profile', True),
-                        "model": self.defaults.get('model', 'all'),
-                        "recycle_early_stop_tolerance": self.defaults.get('recycle_early_stop_tolerance', 0.0),
-                        "select_best_across_recycles": self.defaults.get('select_best_across_recycles', False),
-                        "use_mlm": self.defaults.get('use_mlm', False),
-                        "use_dropout": self.defaults.get('use_dropout', False),
-                        "seed": self.defaults.get('seed', 0),
-                        "show_images": self.defaults.get('show_images', False),
-                        "cols_range": self.defaults.get('cols_range', [])
-                    }
-                    
-                    config_path = wt_dir / "configs" / f"WT_config_pos_{pos}.yaml"
-                    with open(config_path, 'w') as f:
-                        yaml.dump(config, f)
-                    logger.info(f"Created WT position config at {config_path}")
-            
-            # Create mutation directories and their position-specific configs
-            for mutation_set in self.protein_config.iterative_masking.mutations:
-                mutation_name = '_'.join(mutation_set)
-                mutation_dir = self.working_dir / mutation_name
-                
-                # Check if mutation experiment is complete
-                if self._check_mutation_experiment_complete(mutation_dir, sequence_length):
-                    logger.info(f"Skipping {mutation_name} experiment - all positions have results")
-                    continue
-                
-                mutation_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Create standard subdirectories for mutation
-                for subdir in ["configs", "scripts", "logs", "in", "out", "schema"]:
-                    (mutation_dir / subdir).mkdir(parents=True, exist_ok=True)
-                
-                # Create MSA directory for mutation
-                (mutation_dir / "in" / "msa").mkdir(parents=True, exist_ok=True)
-                (mutation_dir / "out" / "pdbs").mkdir(parents=True, exist_ok=True)
-                
-                # Create position-specific configs for mutation
-                for pos in range(1, sequence_length + 1):
-                    # Skip if results already exist
-                    if self._check_position_results_exist(pos, mutation_dir, seq_hash):
-                        logger.info(f"Skipping {mutation_name} position {pos} - results already exist")
-                        continue
-                    
-                    config = {
-                        "sequence": self.protein_config.sequence,
-                        "jobname": f"{mutation_name}_pos_{pos}",
-                        "parent_path": str(mutation_dir),
-                        "setup_path": str(self.slurm_config.setup_path),
-                        "pipeline_type": "mutate_and_mask",  # Explicitly set pipeline type for mutations
-                        "masking_mode": "list",
-                        "mask_msa": True,
-                        "mask_deletion_matrix": True,
-                        "cols": [pos],
-                        "mask_identity": self.protein_config.iterative_masking.mask_token,
-                        "mutations": mutation_set,
-                        "wt_msa_path": str(shared_msa_dir / "msa.a3m"),  # Use shared MSA path
-                        "custom_a3m_path": str(shared_msa_dir / "msa.a3m"),  # Use shared MSA path
-                        "msa_method": "custom_a3m",
-                        "num_recycles": self.defaults.get('num_recycles', 2),
-                        "num_seeds": self.defaults.get('num_seeds', 2),
-                        # Add all required default values
-                        "unified_memory": self.defaults.get('unified_memory', False),
-                        "copies": self.defaults.get('copies', 1),
-                        "pair_mode": self.defaults.get('pair_mode', 'unpaired_paired'),
-                        "cov": self.defaults.get('cov', 75),
-                        "id": self.defaults.get('id', 90),
-                        "qid": self.defaults.get('qid', 0),
-                        "do_not_filter": self.defaults.get('do_not_filter', False),
-                        "template_mode": self.defaults.get('template_mode', 'none'),
-                        "pdb": self.defaults.get('pdb', ''),
-                        "chain": self.defaults.get('chain', 'A'),
-                        "rm_template_seq": self.defaults.get('rm_template_seq', False),
-                        "propagate_to_copies": self.defaults.get('propagate_to_copies', True),
-                        "do_not_align": self.defaults.get('do_not_align', False),
-                        "model_type": self.defaults.get('model_type', 'monomer (ptm)'),
-                        "rank_by": self.defaults.get('rank_by', 'auto'),
-                        "debug": self.defaults.get('debug', False),
-                        "use_initial_guess": self.defaults.get('use_initial_guess', False),
-                        "num_msa": self.defaults.get('num_msa', 512),
-                        "num_extra_msa": self.defaults.get('num_extra_msa', 1024),
-                        "use_cluster_profile": self.defaults.get('use_cluster_profile', True),
-                        "model": self.defaults.get('model', 'all'),
-                        "recycle_early_stop_tolerance": self.defaults.get('recycle_early_stop_tolerance', 0.0),
-                        "select_best_across_recycles": self.defaults.get('select_best_across_recycles', False),
-                        "use_mlm": self.defaults.get('use_mlm', False),
-                        "use_dropout": self.defaults.get('use_dropout', False),
-                        "seed": self.defaults.get('seed', 0),
-                        "show_images": self.defaults.get('show_images', False),
-                        "cols_range": self.defaults.get('cols_range', [])
-                    }
-                    
-                    config_path = mutation_dir / "configs" / f"{mutation_name}_config_pos_{pos}.yaml"
-                    with open(config_path, 'w') as f:
-                        yaml.dump(config, f)
-                    logger.debug(f"Created mutation position config at {config_path}")
-            
-            # Initialize job manager for submitting jobs
-            job_manager = SlurmJobManager(
-                experiment_config=ExperimentConfig(
-                    sequence=self.protein_config.sequence,
-                    jobname_prefix=self.name,
-                    parent_path=str(self.working_dir),
-                    setup_path=str(self.slurm_config.setup_path),
-                    pipeline_type="default",  # This doesn't matter as we'll use config-specific pipeline types
-                    msa_method="custom_a3m",  # Use custom MSA method
-                    custom_a3m_path=str(shared_msa_dir / "msa.a3m")  # Use shared MSA path
-                ),
-                slurm_config=self.slurm_config,
-                working_dir=str(self.working_dir),
-                job_name=self.name
-            )
-            
-            # Submit WT position-specific jobs if not complete
-            if not self._check_mutation_experiment_complete(wt_dir, sequence_length):
-                for pos in range(1, sequence_length + 1):
-                    # Skip if results already exist
-                    if self._check_position_results_exist(pos, wt_dir, seq_hash):
-                        logger.info(f"Skipping WT position {pos} - results already exist")
-                        continue
-                    
-                    config_path = wt_dir / "configs" / f"WT_config_pos_{pos}.yaml"
-                    job_id = job_manager.submit_job(
-                        str(config_path),
-                        f"WT_pos_{pos}",
-                        script_dir=str(wt_dir / "scripts"),
-                        log_dir=str(wt_dir / "logs") 
-                    )
-                    logger.debug(f"Submitted WT position {pos} job with ID: {job_id}")
-            
             # Submit mutation position-specific jobs
-            for mutation_set in self.protein_config.iterative_masking.mutations:
-                mutation_name = '_'.join(mutation_set)
-                mutation_dir = self.working_dir / mutation_name
+            for mutation_set in self.protein_config.iterative_masking.mutation_sets:
+                # Create experiment name that includes mutations and always_mask positions
+                mutation_name = '_'.join(mutation_set['mutations'])
+                if 'always_mask' in mutation_set:
+                    mask_str = 'mask_' + '_'.join(str(pos) for pos in sorted(mutation_set['always_mask']))
+                    mutation_name = f"{mutation_name}_{mask_str}"
                 
-                # Skip if mutation experiment is complete
-                if self._check_mutation_experiment_complete(mutation_dir, sequence_length):
-                    logger.info(f"Skipping {mutation_name} experiment - all positions have results")
-                    continue
+                # Create experiment config
+                config = ExperimentConfig(
+                    sequence=self.protein_config.sequence,
+                    jobname_prefix=mutation_name,
+                    parent_path=str(self.working_dir / mutation_name),
+                    setup_path=str(self.slurm_config.setup_path),
+                    pipeline_type="mutate_and_mask",
+                    mutations=mutation_set['mutations'],
+                    masking_mode="list",
+                    mask_msa=True,
+                    mask_deletion_matrix=True,
+                    mask_token=self.protein_config.iterative_masking.mask_token,
+                    msa_method="custom_a3m",
+                    custom_a3m_path=str(self.working_dir / "WT/in/msa.a3m"),
+                    positions=mutation_set.get('always_mask', []),
+                    cols=mutation_set.get('always_mask', [])
+                )
                 
+                # Create job manager for this mutation set
+                job_manager = SlurmJobManager(
+                    experiment_config=config,
+                    slurm_config=self.slurm_config,
+                    working_dir=str(self.working_dir / mutation_name),
+                    job_name=mutation_name
+                )
+                
+                # For each position in sequence, create and submit a job
                 for pos in range(1, sequence_length + 1):
                     # Skip if results already exist
-                    if self._check_position_results_exist(pos, mutation_dir, seq_hash):
+                    if self._check_position_results_exist(pos, Path(self.working_dir / mutation_name)):
                         logger.info(f"Skipping {mutation_name} position {pos} - results already exist")
                         continue
                     
-                    config_path = mutation_dir / "configs" / f"{mutation_name}_config_pos_{pos}.yaml"
-                    job_id = job_manager.submit_job(
-                        str(config_path),
-                        f"{mutation_name}_pos_{pos}",
-                        script_dir=str(mutation_dir / "scripts"),
-                        log_dir=str(mutation_dir / "logs")
+                    # Create position-specific config
+                    pos_config = config.copy()
+                    # Combine current position with always_mask positions
+                    mask_positions = [pos]
+                    if 'always_mask' in mutation_set:
+                        mask_positions.extend(mutation_set['always_mask'])
+                    mask_positions = sorted(list(set(mask_positions)))
+                    
+                    pos_config.cols = mask_positions
+                    pos_config.positions = mask_positions
+                    pos_config.jobname_prefix = f"{mutation_name}_pos_{pos}"
+                    
+                    # Create job manager for this position
+                    pos_job_manager = SlurmJobManager(
+                        experiment_config=pos_config,
+                        slurm_config=self.slurm_config,
+                        working_dir=str(self.working_dir / mutation_name),
+                        job_name=f"{mutation_name}_pos_{pos}"
                     )
-                    logger.debug(f"Submitted {mutation_name} position {pos} job with ID: {job_id}")
-            
+                    
+                    # Submit the job
+                    success = pos_job_manager.run_experiment()
+                    if not success[0]:
+                        logger.error(f"Failed to submit job for {mutation_name} position {pos}")
+                        return False
+                    
+                    logger.info(f"Successfully submitted job for {mutation_name} position {pos}")
+                
             return True
             
         except Exception as e:
             logger.error(f"Failed to submit experiment: {str(e)}")
             return False
 
-    def _create_wt_config(self) -> ExperimentConfig:
-        """Create configuration for WT job"""
-        config = {
-            "sequence": self.protein_config.sequence,
-            "jobname_prefix": f"{self.name}_WT",
-            "parent_path": str(self.working_dir / "WT"),
-            "num_recycles": self.defaults.get('num_recycles', 2),
-            "num_seeds": self.defaults.get('num_seeds', 2),
-            "setup_path": str(self.slurm_config.setup_path),
-            "pipeline_type": "default"
-        }
-        
-        return ExperimentConfig(**config)
 
-    def _create_mutation_config(self, mutation_set: List[str]) -> ExperimentConfig:
-        """Create configuration for mutation job"""
-        mutation_name = "_".join(mutation_set)
-        config = {
-            "sequence": self.protein_config.sequence,
-            "jobname_prefix": f"{self.name}_mutation_{mutation_name}",
-            "parent_path": str(self.working_dir / mutation_name),
-            "num_recycles": self.defaults.get('num_recycles', 2),
-            "num_seeds": self.defaults.get('num_seeds', 2),
-            "setup_path": str(self.slurm_config.setup_path),
-            "pipeline_type": "mutate"
-        }
-        
-        return ExperimentConfig(**config)
 
-    def _create_masking_config(self) -> ExperimentConfig:
-        """Create configuration for iterative masking job"""
-        config = {
-            "sequence": self.protein_config.sequence,
-            "jobname_prefix": f"{self.name}",
-            "parent_path": str(self.working_dir),
-            "num_recycles": self.defaults.get('num_recycles', 2),
-            "num_seeds": self.defaults.get('num_seeds', 2),
-            "setup_path": str(self.slurm_config.setup_path),
-            "pipeline_type": "mutate_and_mask"
-        }
-        
-        return ExperimentConfig(**config)
+
 
 class AprioriExperiment(BaseExperiment):
     """Implementation of a priori masking experiments"""
@@ -1147,31 +947,68 @@ class FrustraExperiment(BaseExperiment):
             
             df = pd.DataFrame(data)
             
-            # Sort by minimally frustrated ratio (descending) to get top positions
-            # This can be made configurable based on the metric and direction
-            df = df.sort_values(by='Rel_Minimally_Frustrated', ascending=False)
+            # Get regions from config
+            regions = []
+            if hasattr(self.protein_config.frustra_masking, 'regions'):
+                regions = self.protein_config.frustra_masking.regions
             
-            # Get top N positions
-            top_n = min(self.protein_config.frustra_masking.top_positions, len(df))
-            positions = df.head(top_n)['Residue'].tolist()
-            positions.sort()  # Sort positions in ascending order
+            if not regions:
+                # If no regions specified, use full sequence
+                regions = [{
+                    'name': 'full',
+                    'start': 1,
+                    'end': len(self.protein_config.sequence)
+                }]
+            
+            # Process each region
+            all_positions = []
+            for region in regions:
+                region_name = region['name']
+                start = region['start']
+                end = region['end']
+                
+                logger.info(f"Processing region {region_name} (residues {start}-{end})")
+                
+                # Filter DataFrame for this region
+                region_df = df[
+                    (df['Residue'] >= start) & 
+                    (df['Residue'] <= end)
+                ].copy()
+                
+                if region_df.empty:
+                    logger.warning(f"No residues found in region {region_name}")
+                    continue
+                
+                # Sort by minimally frustrated ratio (descending) to get top positions
+                region_df = region_df.sort_values(by='Rel_Minimally_Frustrated', ascending=False)
+                
+                # Get top N positions for this region
+                top_n = min(self.protein_config.frustra_masking.top_positions, len(region_df))
+                region_positions = region_df.head(top_n)['Residue'].tolist()
+                
+                logger.info(f"Selected top {len(region_positions)} positions from {region_name}: {region_positions}")
+                all_positions.extend(region_positions)
+            
+            # Remove duplicates and sort
+            all_positions = sorted(list(set(all_positions)))
             
             # Save complete results
             import pickle
             results = {
-                'positions': positions,
+                'positions': all_positions,
                 'mode': 'configurational',
                 'pdb': str(dest_path),
                 'density_data': df.to_dict('records'),
                 'plots_config': plots_config,
-                'pdb_config': pdb_config
+                'pdb_config': pdb_config,
+                'regions': regions
             }
             
             with open(self.results_file, 'wb') as f:
                 pickle.dump(results, f)
             
-            logger.info(f"Selected top {len(positions)} positions: {positions}")
-            return positions
+            logger.info(f"Selected total of {len(all_positions)} unique positions across all regions: {all_positions}")
+            return all_positions
             
         except Exception as e:
             logger.error(f"Failed to run FrustraPy analysis: {str(e)}")
@@ -1310,9 +1147,8 @@ class FrustraExperiment(BaseExperiment):
 
     def _create_config(self) -> ExperimentConfig:
         """Create configuration for Frustra masking experiment"""
-        # Get shared MSA path from the protein root directory
-        protein_dir = self.working_dir.parent
-        shared_msa_dir = protein_dir / "in" / "msa"
+        # Get shared MSA path from the controls directory
+        shared_msa_dir = self.working_dir / "controls" / "in" / "msa"
         shared_msa_path = shared_msa_dir / "msa.a3m"
         
         config = {
@@ -1324,7 +1160,7 @@ class FrustraExperiment(BaseExperiment):
             "setup_path": str(self.slurm_config.setup_path),
             "pipeline_type": "masking",  # Will be overridden based on condition
             "msa_method": "custom_a3m",  # Always use custom MSA
-            "custom_a3m_path": str(shared_msa_path),  # Use shared MSA path from protein root
+            "custom_a3m_path": str(shared_msa_path),  # Use shared MSA path from controls
             "masking_mode": "off",  # Default to off, will be set to "list" if masking
             "mask_msa": False,  # Default to False, will be set to True if masking
             "mask_deletion_matrix": False,  # Default to False, will be set to True if masking
@@ -1349,40 +1185,61 @@ class FrustraExperiment(BaseExperiment):
             seq_hash = predict.get_hash(self.protein_config.sequence)[:5]
             logger.info(f"Using sequence hash: {seq_hash}")
             
-            # Get protein root directory for shared MSA
-            protein_dir = self.working_dir.parent
-            shared_msa_dir = protein_dir / "in" / "msa"
+            # Get shared MSA directory in controls vanilla      
+            shared_msa_dir = self.working_dir / "controls" / "vanilla" / "in" / "msa"
             shared_msa_dir.mkdir(parents=True, exist_ok=True)
             
-            # Initialize a temporary job manager to handle MSA generation
-            msa_slurm_config = SlurmJobConfig(
-                partition=self.slurm_config.partition,
-                gpu_type=self.slurm_config.gpu_type,
-                setup_path=self.slurm_config.setup_path,
-                container_path=self.slurm_config.container_path,
-                schema_path=self.slurm_config.schema_path
-            )
+            # Check if MSA already exists in the protein root directory
+            protein_msa_dir = self.working_dir.parent / "in" / "msa"
+            protein_msa_path = protein_msa_dir / "msa.a3m"
             
-            # Create MSA config specifically for generation
-            msa_config = ExperimentConfig(
-                sequence=self.protein_config.sequence,
-                jobname_prefix="msa_generation",
-                parent_path=str(shared_msa_dir.parent),  # Use 'in' directory as parent
-                setup_path=str(self.slurm_config.setup_path),
-                pipeline_type="default",
-                msa_method="mmseqs2"  # Force MSA generation
-            )
+            # Target MSA path in controls
+            msa_path = shared_msa_dir / "msa.a3m"
             
-            temp_job_manager = SlurmJobManager(
-                experiment_config=msa_config,
-                slurm_config=msa_slurm_config,
-                working_dir=str(shared_msa_dir.parent),
-                job_name="msa_generation"
-            )
+            if protein_msa_path.exists():
+                # Copy existing MSA from protein root to controls
+                import shutil
+                shutil.copy(str(protein_msa_path), str(msa_path))
+                logger.info(f"Using existing MSA from {protein_msa_path}")
+            else:
+                # Initialize a temporary job manager to handle MSA generation
+                msa_slurm_config = SlurmJobConfig(
+                    partition=self.slurm_config.partition,
+                    gpu_type=self.slurm_config.gpu_type,
+                    setup_path=self.slurm_config.setup_path,
+                    container_path=self.slurm_config.container_path,
+                    schema_path=self.slurm_config.schema_path
+                )
+                
+                # Create MSA config specifically for generation
+                msa_config = ExperimentConfig(
+                    sequence=self.protein_config.sequence,
+                    jobname_prefix="msa_generation",
+                    parent_path=str(protein_msa_dir.parent),  # Use protein 'in' directory as parent
+                    setup_path=str(self.slurm_config.setup_path),
+                    pipeline_type="default",
+                    msa_method="mmseqs2"  # Force MSA generation
+                )
+                
+                temp_job_manager = SlurmJobManager(
+                    experiment_config=msa_config,
+                    slurm_config=msa_slurm_config,
+                    working_dir=str(protein_msa_dir.parent),  # Use protein 'in' directory as working dir
+                    job_name="msa_generation"
+                )
+                
+                # Generate MSA
+                logger.info(f"Generating shared MSA using {msa_slurm_config.partition}/{msa_slurm_config.gpu_type}...")
+                temp_job_manager._handle_msa()
+                
+                # Copy generated MSA to controls
+                if protein_msa_path.exists():
+                    import shutil
+                    shutil.copy(str(protein_msa_path), str(msa_path))
+                    logger.info(f"Copied MSA from {protein_msa_path} to {msa_path}")
+                else:
+                    raise ExperimentError(f"MSA generation failed - no MSA found at {protein_msa_path}")
             
-            # Generate MSA first
-            logger.info(f"Generating shared MSA using {msa_slurm_config.partition}/{msa_slurm_config.gpu_type}...")
-            temp_job_manager._handle_msa()
             logger.info("MSA generation complete")
             
             # Run controls first to get the best PDB for FrustraPy analysis
@@ -1397,7 +1254,9 @@ class FrustraExperiment(BaseExperiment):
                     container_path=self.slurm_config.container_path,
                     schema_path=self.slurm_config.schema_path
                 )
-                if not control.run():
+                # use the shared MSA path protein_msa_path
+
+                if not control.run(msa_path=msa_path):
                     return False
                 
                 # Get the job ID from the most recent submission
@@ -1413,33 +1272,13 @@ class FrustraExperiment(BaseExperiment):
                 logger.error("Failed to get control job ID")
                 return False
             
-            # Wait for control job to complete with 1-hour timeout
-            import time
-            max_wait = 3600  # 1 hour
-            wait_interval = 5  # Check every 30 seconds
-            waited = 0
-            
-            while waited < max_wait:
-                # Check if job is still in queue
-                result = subprocess.run(['squeue', '--job', control_job_id, '--noheader'], capture_output=True, text=True)
-                if result.returncode == 0 and not result.stdout.strip():
-                    logger.info(f"Control job {control_job_id} completed")
-                    break
-                
-                logger.info(f"Waiting for control job {control_job_id} to complete... ({waited}s/{max_wait}s)")
-                time.sleep(wait_interval)
-                waited += wait_interval
-            
-            if waited >= max_wait:
-                logger.error(f"Control job {control_job_id} did not complete within {max_wait} seconds")
-                return False
-            
             # Wait for the PDB file to appear
             control_pdb = self.controls_dir / "vanilla" / "out" / "pdbs" / f"vanilla_{seq_hash}_best.pdb"
             logger.info(f"Looking for PDB file at: {control_pdb}")
             
-            # Additional wait for file to appear (5 minutes)
-            max_file_wait = 300  # 5 minutes
+            # Additional wait for file to appear (20 minutes)
+            max_file_wait = 1200  # 20 minutes
+            wait_interval = 5
             waited = 0
             
             while not control_pdb.exists() and waited < max_file_wait:
@@ -1482,7 +1321,7 @@ class FrustraExperiment(BaseExperiment):
                     # Create experiment configuration
                     config = self._create_config()
                     config.parent_path = str(condition_dir)
-                    
+                    config.custom_a3m_path = str(msa_path)
                     # Set pipeline type based on condition
                     if condition.mask and condition.mutate:
                         config.pipeline_type = "mutate_and_mask"
@@ -1524,7 +1363,8 @@ class FrustraExperiment(BaseExperiment):
                         gpu_type=self.slurm_config.gpu_type,
                         setup_path=self.slurm_config.setup_path,
                         container_path=self.slurm_config.container_path,
-                        schema_path=self.slurm_config.schema_path
+                        schema_path=self.slurm_config.schema_path,
+                        bind_work=self.slurm_config.bind_work
                     )
                     
                     job_manager = SlurmJobManager(
@@ -1545,3 +1385,11 @@ class FrustraExperiment(BaseExperiment):
         except Exception as e:
             logger.error(f"Failed to submit Frustra experiment: {str(e)}")
             return False
+        
+class CoevolutionExperiment(BaseExperiment):
+    #TODO: Implement coevolution experiment
+    pass
+
+class FrustraCoevolutionExperiment(BaseExperiment):
+    #TODO: Implement Frustra coevolution experiment
+    pass

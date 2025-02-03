@@ -296,8 +296,9 @@ class Storage:
         
         # Log detailed seed counts
         for (pos, model, recycle), seeds in seed_counts.items():
-            logger.debug(f"Position {pos}, Model {model}, Recycle {recycle}: {len(seeds)} unique seeds - {sorted(seeds)}")
-        
+            #   logger.debug(f"Position {pos}, Model {model}, Recycle {recycle}: {len(seeds)} unique seeds - {sorted(seeds)}")
+            pass
+
         if positions_in_batch:
             logger.debug(f"Added results to positions: {sorted(positions_in_batch)}")
         if skipped_positions:

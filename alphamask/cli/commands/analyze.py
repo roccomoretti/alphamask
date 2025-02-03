@@ -157,6 +157,15 @@ def _process_experiment_type(
             args=args
         )
     
+    elif exp_type == "frustration":
+        success = _process_frustration_experiments(
+            protein_id=protein_id,
+            exp_dir=exp_dir,
+            analysis_dir=analysis_dir / "frustration",
+            analysis_config=analysis_config,
+            args=args
+        )
+    
     elif exp_type == "iterative":
         # Create base iterative directory
         iterative_dir = analysis_dir / "iterative"
@@ -175,27 +184,59 @@ def _process_experiment_type(
         
         # Process iterative mutations if enabled
         if protein_config.get('iterative_masking', {}).get('enabled', False):
-            mutations = protein_config['iterative_masking'].get('mutations', [])
-            for mutation_set in mutations:
-                # Create mutation name (e.g., "T150A_L157R")
-                mutation_name = "_".join(mutation_set)
-                mutation_dir = exp_dir / mutation_name
-                
-                if mutation_dir.exists():
-                    logger.info(f"Processing iterative mutation: {mutation_name}")
-                    mut_success = _process_iterative_analysis(  # Reuse the same function for mutants
-                        protein_id=protein_id,
-                        wt_dir=mutation_dir,  # Use mutation directory instead of WT
-                        analysis_dir=iterative_dir / mutation_name,
-                        analysis_config=analysis_config,
-                        args=args,
-                        system_name=mutation_name
-                    )
-                    success &= mut_success
-                else:
-                    logger.warning(f"Mutation directory not found: {mutation_dir}")
+            # Check for both old and new mutation formats
+            mutation_sets = protein_config['iterative_masking'].get('mutation_sets', [])
+            if not mutation_sets:
+                # Fall back to old format if mutation_sets is empty
+                mutations = protein_config['iterative_masking'].get('mutations', [])
+                for mutation_set in mutations:
+                    # Create mutation name (e.g., "T150A_L157R")
+                    mutation_name = "_".join(mutation_set)
+                    mutation_dir = exp_dir / mutation_name
                     
- 
+                    if mutation_dir.exists():
+                        logger.info(f"Processing iterative mutation: {mutation_name}")
+                        mut_success = _process_iterative_analysis(
+                            protein_id=protein_id,
+                            wt_dir=mutation_dir,
+                            analysis_dir=iterative_dir / mutation_name,
+                            analysis_config=analysis_config,
+                            args=args,
+                            system_name=mutation_name
+                        )
+                        success &= mut_success
+                    else:
+                        logger.warning(f"Mutation directory not found: {mutation_dir}")
+            else:
+                # Process new mutation_sets format
+                for mutation_set in mutation_sets:
+                    mutations = mutation_set.get('mutations', [])
+                    always_mask = mutation_set.get('always_mask', [])
+                    
+                    # Create mutation and mask names
+                    mutation_name = "_".join(mutations)
+                    if always_mask:
+                        # Create directory name including mask positions
+                        mask_positions = [str(pos) for pos in always_mask]
+                        dir_name = f"{mutation_name}_mask_{'_'.join(mask_positions)}"
+                    else:
+                        dir_name = mutation_name
+                    
+                    mutation_dir = exp_dir / dir_name
+                    
+                    if mutation_dir.exists():
+                        logger.info(f"Processing iterative mutation: {dir_name}")
+                        mut_success = _process_iterative_analysis(
+                            protein_id=protein_id,
+                            wt_dir=mutation_dir,
+                            analysis_dir=iterative_dir / dir_name,
+                            analysis_config=analysis_config,
+                            args=args,
+                            system_name=dir_name
+                        )
+                        success &= mut_success
+                    else:
+                        logger.warning(f"Mutation directory not found: {mutation_dir}")
     
     return success
 
@@ -209,9 +250,21 @@ def _process_iterative_analysis(
 ) -> bool:
     """Process wild-type analysis."""
     if not wt_dir.exists():
+        logger.warning(f"Directory not found: {wt_dir}")
         return True
         
     try:
+        # Check for compressed directory
+        compressed_dir = wt_dir / "out" / "compressed"
+        if not compressed_dir.exists():
+            logger.error(f"Compressed directory not found: {compressed_dir}")
+            return False
+            
+        # Check if directory is empty
+        if not any(compressed_dir.iterdir()):
+            logger.error(f"Compressed directory is empty: {compressed_dir}")
+            return False
+            
         # Filter regions based on command line argument
         regions_to_process = analysis_config.regions
         if args.regions:
@@ -243,29 +296,38 @@ def _process_iterative_analysis(
             region_analysis_dir.mkdir(parents=True, exist_ok=True)
             logger.debug(f"Created region-specific output directory: {region_analysis_dir}")
             
-            # Initialize analysis pipeline with region-specific config
-            pipeline = RMSDAnalysis(
-                config=region_config,
-                output_dir=region_analysis_dir,
-                save_plots=not args.no_plots,
-                plot_format=args.format,
-                force=args.force,
-                parallel=args.parallel,
-                overwrite=args.overwrite
-            )
-            
-            # Run RMSD analysis
-            logger.debug(f"Running RMSD analysis for region {region.name} with exp_dir={wt_dir / 'out' / 'compressed'}")
-            results = pipeline.run_analysis(
-                exp_dir=wt_dir / "out" / "compressed",
-                incremental=args.incremental,
-                overwrite=args.overwrite,
-            )
-            
-            if results:
+            try:
+                # Initialize analysis pipeline with region-specific config
+                pipeline = RMSDAnalysis(
+                    config=region_config,
+                    output_dir=region_analysis_dir,
+                    save_plots=not args.no_plots,
+                    plot_format=args.format,
+                    force=args.force,
+                    parallel=args.parallel,
+                    overwrite=args.overwrite
+                )
+                
+                # Run RMSD analysis
+                logger.debug(f"Running RMSD analysis for region {region.name} with exp_dir={compressed_dir}")
+                results = pipeline.run_analysis(
+                    exp_dir=compressed_dir,
+                    incremental=args.incremental,
+                    overwrite=args.overwrite,
+                )
+                
+                if not results:
+                    logger.error(f"RMSD analysis failed for {system_name}, region {region.name}")
+                    continue
+                
                 # Calculate max_rmsd from all positions
                 max_rmsd = 0
                 positions = pipeline.storage.get_positions()
+                if not positions:
+                    logger.error(f"No positions found in storage for {system_name}, region {region.name}")
+                    continue
+                    
+                logger.info(f"Processing {len(positions)} positions for {system_name}, region {region.name}")
                 
                 # Create progress bar if not in debug mode
                 if not args.debug:
@@ -282,6 +344,10 @@ def _process_iterative_analysis(
                         
                         for pos in positions:
                             recycle_data = pipeline.storage.get_all_recycle_data(pos)
+                            if not recycle_data:
+                                logger.warning(f"No recycle data found for position {pos}")
+                                continue
+                                
                             for model_data in recycle_data.values():
                                 for data in model_data.values():
                                     if data.rmsd_ref1 is not None:
@@ -293,23 +359,30 @@ def _process_iterative_analysis(
                             progress.update(task, advance=1)
                 else:
                     # Debug mode - show detailed logs
-                    logger.debug(f"Calculating max RMSD for positions {positions}")
                     for pos in positions:
                         recycle_data = pipeline.storage.get_all_recycle_data(pos)
+                        if not recycle_data:
+                            logger.warning(f"No recycle data found for position {pos}")
+                            continue
+                            
                         for model_data in recycle_data.values():
                             for data in model_data.values():
                                 if data.rmsd_ref1 is not None:
                                     current_max = np.max(data.rmsd_ref1)
-                                    
+                                    #logger.debug(f"Position {pos} RMSD to ref1 max = {current_max:.2f} Å")
                                     max_rmsd = max(max_rmsd, current_max)
                                 if data.rmsd_ref2 is not None:
                                     current_max = np.max(data.rmsd_ref2)
-                                   
+                                    #logger.debug(f"Position {pos} RMSD to ref2 max = {current_max:.2f} Å")
                                     max_rmsd = max(max_rmsd, current_max)
                 
+                if max_rmsd == 0:
+                    logger.error(f"No valid RMSD values found for {system_name}, region {region.name}")
+                    continue
+                    
                 # Round to the nearest biggest integer
                 max_rmsd = int(max_rmsd) + (1 if max_rmsd % 1 > 0 else 0)
-                logger.info(f"Global max RMSD: {max_rmsd:.2f} Å")
+                logger.info(f"Global max RMSD for {system_name}, region {region.name}: {max_rmsd:.2f} Å")
                 
                 if not args.no_plots:
                     _generate_visualizations(
@@ -320,12 +393,18 @@ def _process_iterative_analysis(
                         max_rmsd=max_rmsd,
                         system_name=system_name
                     )
+                    
+            except Exception as e:
+                logger.error(f"Failed to process region {region.name} for {system_name}: {str(e)}")
+                if args.debug:
+                    logger.debug(traceback.format_exc())
+                continue
         
         return True
         
     except Exception as e:
-        logger.error(f"Analysis failed for {protein_id} WT: {str(e)}")
-        if logger.isEnabledFor(logging.DEBUG):
+        logger.error(f"Analysis failed for {protein_id} {system_name}: {str(e)}")
+        if args.debug:
             logger.debug(traceback.format_exc())
         return False
 

@@ -530,6 +530,7 @@ class SlurmJobManager:
 #SBATCH --cpus-per-task={self.slurm_config.cpus_per_task}
 #SBATCH --partition={self.slurm_config.partition}
 #SBATCH --gres=gpu:{self.slurm_config.gpu_type}:1
+#SBATCH --exclude=paula06
 
 # Run the command using singularity
 echo "Running command: {self.slurm_config.script_path} --config {config_path} --schema {local_schema_path} --pipeline {pipeline_type}"
@@ -730,18 +731,60 @@ eval "$singularity_cmd"
             self.experiment_config.msa_method = "custom_a3m"
             self.experiment_config.custom_a3m_path = str(wt_msa_path)
         
+        # Check for compressed directory and PDB directory
+        compressed_dir = self.working_dir / "out" / "compressed"
+        pdb_dir = self.working_dir / "out" / "pdbs"
+        
+        def check_position_completed(pos: int) -> bool:
+            """Check if a position has completed results"""
+            # Get job prefix (includes mutation info if present)
+            job_prefix = self.experiment_config.jobname_prefix
+            
+            # Check compressed directory first (both h5 and npz)
+            if compressed_dir.exists():
+                h5_pattern = f"{job_prefix}_pos_{pos}_*_mask_{pos}_id_X_all_atoms.h5"
+                npz_pattern = f"{job_prefix}_pos_{pos}_*_mask_{pos}_id_X_all_atoms.npz"
+                h5_files = list(compressed_dir.glob(h5_pattern))
+                npz_files = list(compressed_dir.glob(npz_pattern))
+                if h5_files or npz_files:
+                    logger.info(f"Position {pos} already has compressed results for {job_prefix}")
+                    return True
+            
+            # Check PDB directory as fallback
+            if pdb_dir.exists():
+                pdb_pattern = f"{job_prefix}_pos_{pos}_*_mask_{pos}_id_X_best.pdb"
+                pdb_files = list(pdb_dir.glob(pdb_pattern))
+                if pdb_files:
+                    logger.info(f"Position {pos} already has PDB results for {job_prefix}")
+                    return True
+            
+            return False
+        
         for pos in range(1, sequence_length + 1):
+            # Skip if position already has results
+            if check_position_completed(pos):
+                logger.info(f"Skipping position {pos} - results already exist for {self.experiment_config.jobname_prefix}")
+                continue
+            
             # Create config for this position
             config = self.experiment_config.to_dict()
-            config["cols"] = [pos]  # Mask one position at a time
-            config["positions"] = [pos]  # Also set positions for consistency
             
-            # Set masking configuration
+            # Set basic configuration
+            config["cols"] = [pos]  # Position to mask
+            config["positions"] = [pos]  # Also set positions for consistency
             config["masking_mode"] = "list"
             config["mask_msa"] = True
             config["mask_deletion_matrix"] = True
             config["mask_token"] = "X"
-            config["pipeline_type"] = "masking"
+            
+            # Determine if this is a mutation+masking or just masking job
+            if hasattr(self.experiment_config, "mutations") and self.experiment_config.mutations:
+                config["pipeline_type"] = "mutate_and_mask"
+                # Ensure mutations are properly set
+                if not isinstance(config.get("mutations", []), list):
+                    config["mutations"] = [config["mutations"]]
+            else:
+                config["pipeline_type"] = "masking"
             
             # Set other parameters
             config["num_seeds"] = self.defaults.get('num_seeds', 2)
@@ -751,17 +794,24 @@ eval "$singularity_cmd"
             job_name = f"{self.experiment_config.jobname_prefix}_pos_{pos}"
             
             # Save config
-            config_path = configs_dir / f"config_pos_{pos}.yaml"
+            config_path = configs_dir / f"{self.experiment_config.jobname_prefix}_config_pos_{pos}.yaml"
             with open(config_path, 'w') as f:
                 yaml.dump(config, f)
             
+            # Create job script
+            script_path = self.create_job_script(str(config_path), job_name)
+            
             # Submit job
-            job_id = self.submit_job(str(config_path), job_name)
+            if self.has_slurm:
+                job_id = self._submit_slurm_job(script_path)
+            else:
+                job_id = self._run_job_locally(script_path)
+            
             if job_id:
                 job_ids.append(job_id)
-                logger.debug(f"Submitted masking job for position {pos} with ID {job_id}")
+                logger.debug(f"Submitted {job_name} job with ID: {job_id}")
             else:
-                logger.error(f"Failed to submit job for position {pos}")
+                logger.error(f"Failed to submit job for {job_name}")
         
         return job_ids
 
