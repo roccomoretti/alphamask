@@ -29,23 +29,26 @@ def run(args):
                 store_best_pdb=True  # Always store best PDB
             )
             
+            # Check if running in Colab or similar environment where container isn't needed
+            is_colab = hasattr(args, 'is_colab') and args.is_colab
+            
             # Create SLURM configuration
             slurm_config = SlurmJobConfig(
-                container_path=args.container,
+                container_path=None if is_colab else args.container,
                 script_path="alphamask predict-job",
-                schema_path=args.schema,
-                partition=None if args.force_local else args.partitions[0],
-                gpu_type=None if args.force_local else args.gpu_types[0],
+                schema_path=args.schema if hasattr(args, 'schema') and args.schema else None,
+                partition=None if args.force_local or is_colab else args.partitions[0] if hasattr(args, 'partitions') and args.partitions else None,
+                gpu_type=None if args.force_local or is_colab else args.gpu_types[0] if hasattr(args, 'gpu_types') and args.gpu_types else None,
                 setup_commands=["conda activate alphamask"],
-                time=args.time,
-                memory=args.memory,
-                cpus_per_task=args.cpus_per_task,
-                bind_work=args.bind_work,
-                alphamask_bin_path=args.alphamask_bin_path,
-                alphamask_mount_path=args.alphamask_mount_path,
-                env_manager=args.env_manager,
-                env_name=args.env_name,
-                env_base_path=args.env_base_path
+                time=args.time if hasattr(args, 'time') else None,
+                memory=args.memory if hasattr(args, 'memory') else None,
+                cpus_per_task=args.cpus_per_task if hasattr(args, 'cpus_per_task') else None,
+                bind_work=args.bind_work if hasattr(args, 'bind_work') else False,
+                alphamask_bin_path=args.alphamask_bin_path if hasattr(args, 'alphamask_bin_path') else None,
+                alphamask_mount_path=args.alphamask_mount_path if hasattr(args, 'alphamask_mount_path') else None,
+                env_manager=args.env_manager if hasattr(args, 'env_manager') else 'conda',
+                env_name=args.env_name if hasattr(args, 'env_name') else None,
+                env_base_path=args.env_base_path if hasattr(args, 'env_base_path') else None
                 )
             
             # Initialize partition manager
@@ -59,27 +62,35 @@ def run(args):
                 config_path=args.config,
                 slurm_config=slurm_config,
                 base_dir=base_dir,
-                protein_ids=args.proteins,
-                compression_config=compression_config
+                protein_ids=args.proteins if hasattr(args, 'proteins') else None,
+                compression_config=compression_config,
+                is_colab=is_colab
             )
             
             progress.update(task, completed=True)
             
+            details = {
+                "Config File": args.config,
+                "Command": "alphamask predict-job",
+                "Base Directory": str(base_dir),
+                "Compression": args.compress,
+                "Compression Level": args.compression_level,
+                "Store Uncompressed": "Yes" if args.store_uncompressed else "No"
+            }
+            
+            # Add SLURM-specific details when not in Colab
+            if not is_colab:
+                details.update({
+                    "Container": args.container if hasattr(args, 'container') else "None",
+                    "Partitions": ", ".join(args.partitions) if hasattr(args, 'partitions') and args.partitions else "None",
+                    "GPU Types": ", ".join(args.gpu_types) if hasattr(args, 'gpu_types') and args.gpu_types else "None",
+                    "Proteins": ", ".join(args.proteins) if hasattr(args, 'proteins') and args.proteins else "All",
+                })
+            
             show_summary(
                 success=success,
                 title="Job Submission Complete",
-                details={
-                    "Config File": args.config,
-                    "Command": "alphamask predict-job",
-                    "Container": args.container,
-                    "Base Directory": str(base_dir),
-                    "Partitions": ", ".join(args.partitions),
-                    "GPU Types": ", ".join(args.gpu_types),
-                    "Proteins": ", ".join(args.proteins) if args.proteins else "All",
-                    "Compression": args.compress,
-                    "Compression Level": args.compression_level,
-                    "Store Uncompressed": "Yes" if args.store_uncompressed else "No"
-                }
+                details=details
             )
             
             if not success:

@@ -212,7 +212,8 @@ def run_experiments(
     slurm_config: Optional[SlurmJobConfig] = None,
     base_dir: Optional[Path] = None,
     protein_ids: Optional[list[str]] = None,
-    compression_config: Optional['CompressionConfig'] = None
+    compression_config: Optional['CompressionConfig'] = None,
+    is_colab: bool = False
 ) -> bool:
     """
     Main entry point for running experiments.
@@ -223,6 +224,7 @@ def run_experiments(
         base_dir: Optional base directory for experiments
         protein_ids: Optional list of specific proteins to run
         compression_config: Optional compression configuration
+        is_colab: Flag indicating if running in Google Colab environment
     
     Returns:
         bool: True if all experiments succeeded, False otherwise
@@ -231,6 +233,17 @@ def run_experiments(
         # Create default SLURM config if none provided
         if slurm_config is None:
             slurm_config = SlurmJobConfig()
+        
+        # If running in Colab, set specific defaults
+        if is_colab:
+            slurm_config.partition = None
+            slurm_config.gpu_type = None
+            slurm_config.container_path = None
+            # If schema_path is None, try to use a default one
+            if not slurm_config.schema_path:
+                default_schema = Path(__file__).parent.parent / "config" / "schema_validation.json"
+                if default_schema.exists():
+                    slurm_config.schema_path = str(default_schema)
         
         runner = ExperimentRunner(
             config_path=config_path, 
@@ -258,18 +271,24 @@ def run_experiments(
             # Run experiments
             success = True
             for protein_id, length in protein_lengths:
-                partition, gpu_type = partition_manager.get_partition_for_sequence(runner.config.proteins[protein_id].sequence)
-                # Update only partition and GPU type, preserve other SLURM settings
-                runner.slurm_config.partition = partition
-                runner.slurm_config.gpu_type = gpu_type
+                # Skip partition assignment in Colab
+                if not is_colab:
+                    partition, gpu_type = partition_manager.get_partition_for_sequence(runner.config.proteins[protein_id].sequence)
+                    # Update only partition and GPU type, preserve other SLURM settings
+                    runner.slurm_config.partition = partition
+                    runner.slurm_config.gpu_type = gpu_type
+                    
+                    logger.info(f"Processing {protein_id} (length: {length}) on {partition}/{gpu_type}")
+                else:
+                    logger.info(f"Processing {protein_id} (length: {length}) in Colab")
                 
-                logger.info(f"Processing {protein_id} (length: {length}) on {partition}/{gpu_type}")
                 if not runner.run_protein_experiments(protein_id):
                     success = False
                 
-                # Log partition updates at debug level
-                logger.debug(f"After processing {protein_id}:")
-                logger.debug(partition_manager.get_usage_summary())
+                # Log partition updates at debug level (only if not in Colab)
+                if not is_colab:
+                    logger.debug(f"After processing {protein_id}:")
+                    logger.debug(partition_manager.get_usage_summary())
             
             return success
         else:

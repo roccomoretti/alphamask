@@ -122,16 +122,21 @@ def create_parser() -> argparse.ArgumentParser:
         help="Specific proteins to run (default: all)"
     )
     run_parser.add_argument(
+        "--is-colab",
+        action="store_true",
+        help="Flag to indicate running in Google Colab environment"
+    )
+    run_parser.add_argument(
         "--container",
         type=str,
-        required=True,
-        help="Path to Singularity container"
+        required=False,
+        help="Path to Singularity container (not required in Colab)"
     )
     run_parser.add_argument(
         "--schema",
         type=str,
-        required=True,
-        help="Path to JSON schema"
+        required=False,
+        help="Path to JSON schema (not required in Colab)"
     )
     run_parser.add_argument(
         "--partitions",
@@ -378,8 +383,8 @@ def create_parser() -> argparse.ArgumentParser:
         "--experiment-types",
         type=str,
         nargs="+",
-        choices=["apriori", "iterative"],
-        default=["apriori", "iterative"],
+        choices=["apriori", "iterative", "frustra"],
+        default=["apriori", "iterative", "frustra"],
         help="Types of experiments to analyze (default: all)"
     )
     analyze_parser.add_argument(
@@ -502,6 +507,13 @@ def create_parser() -> argparse.ArgumentParser:
         help="Show what would be resubmitted without actually submitting"
     )
     resubmit_incomplete_parser.set_defaults(func=resubmit_incomplete)
+    
+    # Add setup_path argument to run command
+    run_parser.add_argument(
+        "--setup-path",
+        type=str,
+        help="Path to setup files (default: same as path argument)"
+    )
     
     return parser
 
