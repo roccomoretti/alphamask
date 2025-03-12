@@ -141,6 +141,12 @@ def create_parser() -> argparse.ArgumentParser:
         help="SLURM partitions to use (e.g., clara paula)"
     )
     run_parser.add_argument(
+        "--account",
+        type=str,
+        required=True,
+        help="HPRC account. Depends on your cluster. Prerably use an account with access to GPU nodes."
+    )
+    run_parser.add_argument(
         "--gpu-types",
         type=str,
         nargs="+",

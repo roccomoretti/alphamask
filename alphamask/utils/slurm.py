@@ -35,6 +35,7 @@ class SlurmJobConfig:
     memory: str = "10000"
     cpus_per_task: int = 1
     partition: str = "clara"
+    account: str = "csb_gpu_acc"
     gpu_type: str = "rtx2080ti"
     gpu_count: int = 1
     email: Optional[str] = None
@@ -554,6 +555,7 @@ class SlurmJobManager:
 #SBATCH --output={str(log_dir_path / f"{job_name}.out")}
 #SBATCH --error={str(log_dir_path / f"{job_name}.err")}
 #SBATCH --time={self.slurm_config.time}
+#SBATCH --account={self.slurm_config.account}
 #SBATCH --mem={self.slurm_config.memory}
 #SBATCH --cpus-per-task={self.slurm_config.cpus_per_task}
 #SBATCH --partition={self.slurm_config.partition}

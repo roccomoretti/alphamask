@@ -38,6 +38,7 @@ def run(args):
                 gpu_type=None if args.force_local else args.gpu_types[0],
                 setup_commands=["conda activate alphamask"],
                 time=args.time,
+                account=args.account,                
                 memory=args.memory,
                 cpus_per_task=args.cpus_per_task,
                 bind_work=args.bind_work,
