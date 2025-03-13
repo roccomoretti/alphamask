@@ -34,9 +34,6 @@ dependencies = [
 Homepage = "https://github.com/engelberger/alphamask"
 Repository = "https://github.com/engelberger/alphamask"
 
-[tool.setuptools]
-packages = ["alphamask", "alphamask.cli"]
-
 [tool.setuptools.package-data]
 alphamask = [
     "py.typed",
